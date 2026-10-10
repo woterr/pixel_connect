@@ -46,7 +46,6 @@ for _candidate in ("4.1", "4.0", "3.0"):
         continue
 if _NAUTILUS_VERSION is None:
     raise ImportError("no usable Nautilus typelib found (tried 4.1, 4.0, 3.0)")
-gi.require_version("Gtk", "3.0")
 from gi.repository import GObject, Nautilus  # noqa: E402
 
 # XDG_RUNTIME_DIR is the authoritative location; fall back to /tmp so the
@@ -57,26 +56,30 @@ LABEL = "Send to Pixel"
 
 
 def _notify(parent, kind, message):
-    """Show a Gtk dialog, or fall back to zenity/notify-send."""
+    """Report the outcome as a desktop notification.
+
+    This deliberately does not use Gtk. Nautilus extensions run inside the
+    GTK 4 process, and importing Gtk 3 there is a well known way to abort the
+    whole file manager - the failure mode being Files simply refusing to open.
+    `notify-send` keeps the message on screen and leaves the toolkit alone;
+    if even that is missing we fall back to Nautilus's own information bar.
+    """
+    urgency = "critical" if kind == "ERROR" else "normal"
     try:
-        dialog = Gtk.MessageDialog(
-            transient_for=parent,
-            modal=True,
-            message_type=getattr(Gtk.MessageType, kind, Gtk.MessageType.INFO),
-            buttons=Gtk.ButtonsType.OK,
-            text=message,
+        subprocess.Popen(
+            ["notify-send", "-a", "Pixel Connect", "-u", urgency, "Send to Pixel", message],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        dialog.run()
-        dialog.destroy()
+        return
     except Exception:
-        try:
-            subprocess.Popen(
-                ["notify-send", "-a", "Pixel Connect", message],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            print(f"Pixel Connect: {message}")
+        pass
+    try:
+        window = parent.get_window() if hasattr(parent, "get_window") else None
+        if window is not None:
+            window.emit("message", "Pixel Connect", message)
+    except Exception:
+        print(f"Pixel Connect: {message}")
 
 
 def backend_running():
@@ -190,6 +193,15 @@ class PixelConnectMenuProvider(GObject.GObject, Nautilus.MenuProvider):
         ok, message = send(uris)
         _notify(self.get_window(), "INFO" if ok else "ERROR", message)
 
-
-# Nautilus instantiates the class it finds in this module.
-gobject_class = GObject.type_register(PixelConnectMenuProvider)
+# No explicit `GObject.type_register()` here.
+#
+# `__gtype_name__` above already registers the type, and calling
+# `type_register()` a second time re-registers the same name. GLib then
+# aborts with
+#
+#     g_boxed_type_register_static: assertion
+#     'g_type_from_name (name) == 0' failed
+#
+# which crashed Nautilus outright instead of merely hiding the menu entry.
+# PyGObject registers the class automatically and Nautilus discovers the
+# MenuProvider subclass from this module.

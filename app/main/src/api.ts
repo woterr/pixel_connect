@@ -97,6 +97,9 @@ export const kdeUnpair = (deviceId: string) =>
 export const kdePing = (deviceId: string, message: string) =>
 	invoke<void>('kde_ping', { deviceId, message })
 
+export const clipboardWriteText = (text: string) =>
+	invoke<void>('clipboard_write_text', { text })
+
 export const kdeShareText = (deviceId: string, text: string) =>
 	invoke<void>('kde_share_text', { deviceId, text })
 

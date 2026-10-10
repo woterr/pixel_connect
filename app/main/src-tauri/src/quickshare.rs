@@ -36,6 +36,32 @@ pub fn spawn_forwarders(app: AppHandle) {
             loop {
                 match rx.recv().await {
                     Ok(msg) => {
+                        // A text share is only useful once the text itself has
+                        // arrived, which happens after consent is given. Put it
+                        // on the desktop clipboard at that point: sharing a
+                        // snippet from the phone is a request to have it ready
+                        // to paste, not merely to be listed in activity.
+                        if let Some(payload) = msg
+                            .meta
+                            .as_ref()
+                            .and_then(|m| m.text_payload.as_deref())
+                            .map(str::trim)
+                            .filter(|t| !t.is_empty())
+                        {
+                            crate::clipboard::remember_applied(payload);
+                            crate::clipboard::set_text(payload.to_string());
+                            if let Some(name) = msg
+                                .meta
+                                .as_ref()
+                                .and_then(|m| m.source.as_ref())
+                                .map(|s| s.name.clone())
+                            {
+                                let _ = app.emit(
+                                    "quickshare:text",
+                                    serde_json::json!({ "deviceName": name }),
+                                );
+                            }
+                        }
                         if msg.direction == ChannelDirection::FrontToLib {
                             if msg.state
                                 == Some(pixel_connect_quickshare::State::WaitingForUserConsent)

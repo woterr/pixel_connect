@@ -15,6 +15,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import PcIcon from './atoms/PcIcon.vue'
 import ProgressWave from './atoms/ProgressWave.vue'
 import type { ViewName } from './SideMenu.vue'
+import type { PendingShare } from '../types'
 import { useAppStore } from '../stores/app'
 import { formatBytes, formatEta, formatRate, toPercent, etaFrom, fileCategory } from '../utils'
 import * as api from '../api'
@@ -24,7 +25,6 @@ const props = defineProps<{ view: ViewName }>()
 
 const store = useAppStore()
 
-const fileInput = ref<HTMLInputElement | null>(null)
 const dragActive = ref(false)
 const textDraft = ref('')
 const sendingText = ref(false)
@@ -148,47 +148,76 @@ async function sendSelected() {
 			n > 0 ? 'success' : 'error',
 		)
 		selectedFile.value = null
-		if (fileInput.value) fileInput.value.value = ''
 	} catch (e) {
 		store.toast(`Could not send the file: ${e}`, 'error')
 	}
 }
 
-async function onFilePicked(e: Event) {
-	const input = e.target as HTMLInputElement
-	const f = input.files?.[0]
-	if (!f) return
-	// Tauri exposes the real path on the File object when the file was chosen
-	// through the native dialog; without it we cannot send anything, so say so.
-	const path = (f as File & { path?: string }).path
-	if (!path) {
-		store.toast(
-			'This build of the web view did not expose a file path. Use the "Send to Pixel" entry in the Files app instead.',
-			'error',
-		)
-		input.value = ''
-		return
+/**
+ * Choose a file to send.
+ *
+ * Uses the Tauri dialog plugin rather than a hidden `<input type="file">`.
+ * A plain file input is handled entirely by the web view, and this build does
+ * not expose the `path` property on the resulting `File`, so the selection
+ * arrived with no filesystem path and nothing could be sent - surfacing as
+ * "This build of the web view did not expose a file path". The dialog plugin
+ * goes through the native GTK picker and returns a real path, which is what
+ * the backend needs.
+ */
+async function browseForFile() {
+	try {
+		const { open } = await import('@tauri-apps/plugin-dialog')
+		const picked = await open({ multiple: false, directory: false })
+		if (typeof picked !== 'string') return
+		selectedFile.value = {
+			name: picked.split('/').pop() || picked,
+			path: picked,
+			size: 0,
+		}
+	} catch (e) {
+		store.toast(`Could not open the file chooser: ${e}`, 'error')
 	}
-	selectedFile.value = { name: f.name, path, size: f.size }
 }
 
 function onDrop(e: DragEvent) {
 	dragActive.value = false
 	const f = e.dataTransfer?.files?.[0]
 	if (!f) return
-	// The web view does not resolve a filesystem path for dropped files, so we
-	// say so precisely rather than pretending the drop worked.
+	// Drag and drop is genuinely unsupported here: the web view will not resolve
+	// a filesystem path for a dropped file, and there is no way to recover one
+	// in the browser. Say so and point at the two routes that do work.
 	store.toast(
-		`"${f.name}" cannot be sent by drag and drop: the web view cannot resolve a filesystem path. Use "Browse", or right-click the file in Files and choose "Send to Pixel".`,
+		`"${f.name}" cannot be sent by drag and drop. Use "Browse", or right-click the file in Files and choose "Send to Pixel".`,
 		'info',
 	)
 }
+
 
 async function respondToRequest(accept: boolean) {
 	const id = store.quickshareMeta?.id
 	if (!id) return
 	if (accept) await api.quickshareAcceptTransfer(id)
 	else await api.quickshareRejectTransfer(id)
+}
+
+/**
+ * Put shared text (or a shared link) on the desktop clipboard.
+ *
+ * Sharing a snippet from the phone is a request to have it ready to paste, so
+ * that is the whole point of the row. The previous "Review" button dismissed
+ * the offer and navigated to the Devices page, which did nothing with it.
+ */
+async function copySharedText(share: PendingShare) {
+	const text = share.text ?? share.url
+	if (!text) return
+	try {
+		await api.clipboardWriteText(text)
+		store.toast('Copied to the clipboard', 'success')
+		await api.kdeDismissShare(share.id)
+		store.shares = store.shares.filter((x) => x.id !== share.id)
+	} catch (e) {
+		store.toast(`Could not copy: ${e}`, 'error')
+	}
 }
 
 async function openPendingShare(id: string) {
@@ -389,14 +418,8 @@ onBeforeUnmount(() => {
 					</div>
 					<p class="text-sm text-muted">
 						Drag &amp; drop or
-						<button class="underline" @click="fileInput?.click()">Browse</button>
+						<button class="underline" @click="browseForFile">Browse</button>
 					</p>
-					<input
-						ref="fileInput"
-						type="file"
-						class="hidden"
-						@change="onFilePicked"
-					/>
 				</div>
 				<div class="mt-4 rounded-xl bg-ink-card-alt px-4 py-3 text-center text-sm text-muted">
 					<template v-if="selectedFile">
@@ -429,14 +452,38 @@ onBeforeUnmount(() => {
 					</div>
 					<div class="min-w-0 flex-1">
 						<p class="truncate font-semibold">
-							{{ share.filename ?? share.kind }}
+							{{ share.filename ?? (share.kind === 'text' ? 'Shared text' : share.kind) }}
 						</p>
-						<p class="text-sm text-muted">
+						<!--
+							Show what was actually shared. A row reading only "text" tells
+							the user nothing, and "Review" then did nothing with it.
+						-->
+						<p
+							v-if="share.text"
+							class="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-sm text-muted"
+						>
+							{{ share.text }}
+						</p>
+						<p v-else-if="share.url" class="mt-1 truncate text-sm text-muted">
+							{{ share.url }}
+						</p>
+						<p class="mt-1 text-xs text-faint">
 							From {{ share.deviceName }}
 							<span v-if="share.filesize"> · {{ formatBytes(share.filesize) }}</span>
 						</p>
 					</div>
-					<button class="pc-btn pc-btn-secondary pc-btn-sm" @click="openPendingShare(share.id)">
+					<button
+						v-if="share.text || share.url"
+						class="pc-btn pc-btn-primary pc-btn-sm"
+						@click="copySharedText(share)"
+					>
+						Copy to clipboard
+					</button>
+					<button
+						v-else
+						class="pc-btn pc-btn-secondary pc-btn-sm"
+						@click="openPendingShare(share.id)"
+					>
 						Review
 					</button>
 				</div>
