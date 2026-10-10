@@ -25,6 +25,7 @@ pub mod packet;
 pub mod pairing;
 pub mod tls;
 pub mod tls_verify;
+pub mod transfer_guard;
 pub mod transport;
 pub mod types;
 

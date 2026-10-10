@@ -1,6 +1,6 @@
 {
   "identifier": "migrated",
-  "description": "permissions that were migrated from v1",
+  "description": "Least-privilege permissions for the Pixel Connect window. The front end never imports the shell plugin, so no shell permission is granted.",
   "local": true,
   "windows": [
     "main"
@@ -25,8 +25,6 @@
     "autostart:allow-is-enabled",
     "dialog:allow-open",
     "clipboard-manager:allow-read-text",
-    "clipboard-manager:allow-write-text",
-    "shell:allow-open",
-    "store:default"
+    "clipboard-manager:allow-write-text"
   ]
 }

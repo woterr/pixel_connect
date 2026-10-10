@@ -907,8 +907,24 @@ fn spawn_payload_receiver(
             emit_error(&events, &device_id, &filename, 0, total, &e.to_string());
             return;
         }
+
+        // Refuse before writing anything if the announced size exceeds the
+        // ceiling or the free space. Failing here rather than mid-stream keeps
+        // the filesystem intact and gives the user an immediate answer.
+        let max_bytes = ctx.config.lock().await.max_incoming_bytes();
+        if let Err(refusal) = crate::transfer_guard::check_incoming(&dir, total, max_bytes) {
+            let msg = refusal.to_string();
+            warn!("refusing a file from {device_id}: {msg}");
+            emit_error(&events, &device_id, &filename, 0, total, &msg);
+            return;
+        }
+
         let dest = unique_destination(&dir, &filename);
-        let tmp = dest.with_extension("part");
+        // The temporary file must be unique per attempt, not merely per name:
+        // two transfers of "photo.jpg" arriving at once would otherwise share
+        // one ".part" file and interleave their bytes into a corrupt result.
+        let tmp = unique_destination(&dir, &format!("{filename}.part"));
+        let mut guard = crate::transfer_guard::DownloadGuard::new(Some(total), max_bytes);
         let mut file = match tokio::fs::File::create(&tmp).await {
             Ok(f) => f,
             Err(e) => {
@@ -948,6 +964,15 @@ fn spawn_payload_receiver(
             match tls.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
+                    // Enforce the ceiling while streaming, not only up front: a
+                    // peer may announce a small size and then keep sending.
+                    if let Err(e) = guard.record(n as u64) {
+                        drop(file);
+                        let _ = tokio::fs::remove_file(&tmp).await;
+                        warn!("stopping a file from {device_id}: {e}");
+                        emit_error(&events, &device_id, &filename, received, total, &e);
+                        return;
+                    }
                     if let Err(e) = file.write_all(&buf[..n]).await {
                         let _ = tokio::fs::remove_file(&tmp).await;
                         emit_error(
@@ -1003,6 +1028,22 @@ fn spawn_payload_receiver(
 
         drop(file);
         crate::cancel::finish(&transfer_id);
+
+        // The stream ended but the peer sent less than it announced. Moving
+        // the file into place now would present a truncated, corrupt file to the
+        // user as though it were intact, so the partial data is discarded.
+        if !guard.is_complete() {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            let msg = format!(
+                "the sender ended after {} of the announced {}",
+                crate::transfer_guard::human_bytes(guard.received()),
+                crate::transfer_guard::human_bytes(total)
+            );
+            warn!("truncated transfer from {device_id}: {msg}");
+            emit_error(&events, &device_id, &filename, received, total, &msg);
+            return;
+        }
+
         if let Err(e) = std::fs::rename(&tmp, &dest) {
             emit_error(
                 &events,
@@ -1031,15 +1072,29 @@ fn spawn_payload_receiver(
 }
 
 /// Strip any path components a peer may have injected into a filename.
+///
+/// Everything that could change *where* the file lands, or *how* it is
+/// displayed, is removed rather than escaped:
+///
+///   * path separators, by keeping only the final component;
+///   * NUL, which truncates paths at the syscall boundary on some platforms;
+///   * other control characters, which would otherwise let a peer forge log
+///     lines by sending a filename containing a newline;
+///   * `:`, which is a path separator on Windows and part of the KDE Connect
+///     notification key format.
 pub fn sanitize_filename(name: &str) -> String {
     let base = name.rsplit('/').next().unwrap_or("file");
     let base = base.rsplit('\\').next().unwrap_or(base);
     let cleaned: String = base
         .chars()
-        .filter(|c| *c != '\0' && *c != ':')
+        .filter(|c| !c.is_control() && *c != ':')
         .take(200)
         .collect();
-    if cleaned.trim().is_empty() || cleaned == "." || cleaned == ".." {
+    let cleaned = cleaned.trim().to_string();
+    // A name made entirely of removed characters, or the relative-directory
+    // markers, must not survive as a destination.
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." || cleaned.chars().all(|c| c == '.')
+    {
         "received-file".to_string()
     } else {
         cleaned
@@ -1122,8 +1177,110 @@ mod tests {
         assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
         assert_eq!(sanitize_filename("a/b/c.txt"), "c.txt");
         assert_eq!(sanitize_filename(".."), "received-file");
+        assert_eq!(sanitize_filename("...."), "received-file");
+        assert_eq!(sanitize_filename("normal.png"), "normal.png");
         assert_eq!(sanitize_filename(""), "received-file");
         assert_eq!(sanitize_filename("normal.png"), "normal.png");
+    }
+
+    #[test]
+    fn every_traversal_and_injection_shape_is_stripped() {
+        // Each of these must reduce to a plain name inside the download
+        // directory. The assertion is not on the exact result — a peer's choice
+        // of spelling should not matter — but on the invariant that nothing
+        // capable of changing the destination survives.
+        let hostile = [
+            "../../../etc/shadow",
+            "..\\..\\windows\\system32\\config",
+            "/etc/passwd",
+            "/absolute/path.bin",
+            "C:\\Windows\\evil.dll",
+            "....//....//etc/passwd",
+            "./../../etc/passwd",
+            "a/b/../../../c",
+            "....",
+            "..",
+            ".",
+            "./",
+            "../",
+            "foo/..",
+        ];
+        for raw in hostile {
+            let clean = sanitize_filename(raw);
+            assert!(!clean.is_empty(), "{raw:?} produced an empty name");
+            assert!(
+                !clean.contains('/') && !clean.contains('\\'),
+                "{raw:?} still contains a path separator: {clean:?}"
+            );
+            assert!(
+                clean != "." && clean != "..",
+                "{raw:?} resolved to {clean:?}"
+            );
+            // The decisive check: joining it must stay inside the directory.
+            let dir = std::path::Path::new("/tmp/downloads");
+            let joined = dir.join(&clean);
+            assert!(
+                joined.starts_with(dir),
+                "{raw:?} escaped to {}",
+                joined.display()
+            );
+        }
+    }
+
+    #[test]
+    fn nuls_and_control_characters_are_removed() {
+        assert_eq!(sanitize_filename("a\0b.txt"), "ab.txt");
+        // A newline in a filename would break line-oriented protocol handling
+        // and log forging; it is stripped by the NUL filter's sibling rule.
+        assert!(!sanitize_filename("a\nb").contains('\n'));
+        assert!(!sanitize_filename("a\r\nb: fake log line").contains('\n'));
+    }
+
+    #[test]
+    fn an_overlong_name_is_bounded() {
+        let long = "x".repeat(5000);
+        let clean = sanitize_filename(&long);
+        assert!(clean.len() <= 200, "got {} chars", clean.len());
+    }
+
+    #[test]
+    fn a_dangling_symlink_does_not_redirect_the_destination() {
+        // `Path::exists` follows symlinks, so a dangling symlink reports
+        // "missing" and would otherwise be chosen as the destination. Writing
+        // to it would follow the link if it later resolved to somewhere else.
+        let dir = std::env::temp_dir().join(format!("pc-symlink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"original").unwrap();
+
+        let link = dir.join("evil.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        let chosen = unique_destination(&dir, "evil.txt");
+        // Writing the temporary file must not have followed the link.
+        assert_ne!(
+            chosen, link,
+            "a symlink must never be chosen as the destination"
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), b"original");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn concurrent_transfers_of_one_name_get_distinct_temporaries() {
+        // Two transfers of "photo.jpg" must not share one ".part" file, or
+        // their bytes interleave into a corrupt result.
+        let dir = std::env::temp_dir().join(format!("pc-concurrent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let first = unique_destination(&dir, "photo.jpg.part");
+        std::fs::write(&first, b"a").unwrap();
+        let second = unique_destination(&dir, "photo.jpg.part");
+        assert_ne!(first, second, "the temporary path collided");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -660,6 +660,7 @@ dependencies = [
  "futures",
  "get_if_addrs",
  "hostname",
+ "libc",
  "log",
  "mdns-sd",
  "rand",

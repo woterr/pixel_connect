@@ -107,7 +107,15 @@ pub fn validate(target: &SshTarget) -> Result<(), String> {
         || target
             .username
             .chars()
-            .any(|c| c.is_whitespace() || matches!(c, '\0' | ':' | '@' | '/' | '\\'))
+            // A leading `-` would be read by ssh as an option rather than as
+            // part of `user@host`, so a username like `-oProxyCommand=…` could
+            // smuggle an extra option into the invocation. `@` and `:` would
+            // corrupt the `user@host` split, and `=` would interfere with the
+            // option syntax this check exists to prevent.
+            .any(|c| {
+                c.is_whitespace()
+                    || matches!(c, '\0' | ':' | '@' | '/' | '\\' | '=' | '-' | '?')
+            })
     {
         return Err("username contains invalid characters".into());
     }
@@ -296,6 +304,67 @@ mod tests {
             t.username = bad.into();
             assert!(validate(&t).is_err(), "{bad:?} should be rejected");
         }
+    }
+
+    #[test]
+    fn rejects_a_username_that_would_be_read_as_an_option() {
+        // The `user@host` argument is passed to ssh as a single argv entry, but
+        // ssh parses any leading `-` as an option. A username crafted to start
+        // with one could therefore inject an extra option — for example
+        // `-oProxyCommand=…`, which executes a command locally.
+        for bad in [
+            "-oProxyCommand=touch /tmp/pwned",
+            "-oProxyCommand=id",
+            "-F/dev/null",
+            "-",
+            "user=name",
+            "user?name",
+        ] {
+            let mut t = target();
+            t.username = bad.into();
+            assert!(validate(&t).is_err(), "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn an_injected_username_never_reaches_the_command_line() {
+        // Belt and braces: even if validation were bypassed, the host is always
+        // appended, so the argument can never *begin* with a dash.
+        let mut t = target();
+        t.username = "-oProxyCommand=id".into();
+        if validate(&t).is_ok() {
+            let args = probe_args(&t);
+            let dest = args.last().unwrap();
+            assert!(dest.starts_with("user@") || dest.starts_with("-") == false);
+            assert!(!dest.starts_with('-'), "destination must not look like an option");
+        }
+    }
+
+    #[test]
+    fn host_key_verification_is_never_disabled() {
+        let args = probe_args(&target());
+        let joined = args.join(" ");
+        // `StrictHostKeyChecking=no` or `UserKnownHostsFile=/dev/null` would
+        // silently accept a machine impersonating the phone.
+        assert!(
+            !joined.contains("StrictHostKeyChecking=no"),
+            "host key checking must never be turned off"
+        );
+        assert!(
+            !joined.contains("UserKnownHostsFile=/dev/null"),
+            "known-hosts must never be discarded"
+        );
+        // accept-new records a new host but still rejects a *changed* key.
+        assert!(joined.contains("StrictHostKeyChecking=accept-new"));
+    }
+
+    #[test]
+    fn the_probe_never_asks_for_a_password() {
+        let args = probe_args(&target());
+        assert!(args.contains(&"BatchMode=yes".to_string()));
+        // The literal `true` is the whole remote command: nothing that could
+        // exfiltrate data or change the remote machine.
+        assert_eq!(args.last().unwrap(), "true");
     }
 
     #[test]

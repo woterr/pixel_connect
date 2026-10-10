@@ -165,11 +165,26 @@ pub fn read_text() -> Option<String> {
     }
 }
 
+/// The shared X11/XWayland clipboard handle.
+///
+/// Constructing this is not cheap and, on a session with no data-control
+/// protocol, `arboard` logs a warning every time it falls back from Wayland to
+/// X11. The clipboard watcher polls twice a second, so building a fresh handle
+/// per poll produced thousands of identical warnings an hour and turned a
+/// transient condition into unbounded log growth. One handle, reused, keeps the
+/// fallback notice to a single line at start-up.
+fn x11_clipboard() -> Option<&'static std::sync::Mutex<arboard::Clipboard>> {
+    use std::sync::OnceLock;
+    static HANDLE: OnceLock<Option<std::sync::Mutex<arboard::Clipboard>>> = OnceLock::new();
+    HANDLE
+        .get_or_init(|| arboard::Clipboard::new().ok().map(std::sync::Mutex::new))
+        .as_ref()
+}
+
 fn read_x11() -> Option<String> {
-    arboard::Clipboard::new()
-        .ok()
-        .and_then(|mut c| c.get_text().ok())
-        .filter(|s| !s.is_empty())
+    let handle = x11_clipboard()?;
+    let mut guard = handle.lock().ok()?;
+    guard.get_text().ok().filter(|s| !s.is_empty())
 }
 
 fn read_wayland() -> Option<String> {
@@ -197,13 +212,16 @@ pub fn set_text_blocking(text: String) {
         ClipboardMechanism::X11 | ClipboardMechanism::WaylandX11Bridge => {
             // The process stays alive for the whole session, so arboard keeps
             // owning the selection and the text remains pasteable.
-            match arboard::Clipboard::new() {
-                Ok(mut cb) => {
-                    if let Err(e) = cb.set_text(text) {
-                        log::error!("could not set the clipboard: {e}");
+            match x11_clipboard() {
+                Some(handle) => match handle.lock() {
+                    Ok(mut guard) => {
+                        if let Err(e) = guard.set_text(text) {
+                            log::error!("could not set the clipboard: {e}");
+                        }
                     }
-                }
-                Err(e) => log::error!("could not open the clipboard to set it: {e}"),
+                    Err(_) => log::error!("the clipboard is locked by another task"),
+                },
+                None => log::error!("could not open the clipboard to set it"),
             }
         }
         ClipboardMechanism::WaylandDataControl => set_wayland(text),

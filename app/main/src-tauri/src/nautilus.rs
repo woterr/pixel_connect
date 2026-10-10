@@ -17,13 +17,16 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::kdc::KdcState;
 
 pub const MAX_PATHS_PER_REQUEST: usize = 512;
 pub const MAX_PATH_LEN: usize = 4096;
+/// Largest single IPC request accepted. A list of 512 paths at 4096 bytes each
+/// is well under this, so legitimate requests are unaffected.
+pub const MAX_REQUEST_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,7 +105,14 @@ pub async fn handle_client(stream: UnixStream, app: tauri::AppHandle) -> anyhow:
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
-    let n = reader.read_line(&mut line).await?;
+    // A request is a single JSON object on one line. The socket is mode 0600
+    // in a 0700 directory, so only this user's own processes can reach it, but
+    // a bounded read still stops a buggy or hostile caller from making the
+    // daemon allocate without limit.
+    let n = (&mut reader)
+        .take(MAX_REQUEST_BYTES)
+        .read_line(&mut line)
+        .await?;
     if n == 0 {
         return Ok(());
     }

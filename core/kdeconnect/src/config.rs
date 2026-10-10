@@ -50,6 +50,14 @@ pub struct Settings {
     pub device_type: DeviceType,
     #[serde(rename = "incomingPath", default)]
     pub incoming_path: Option<PathBuf>,
+    /// Largest single incoming file we will accept, in bytes.
+    ///
+    /// `None` means "use the default ceiling" (`transfer_guard::
+    /// DEFAULT_MAX_INCOMING_BYTES`), which is generous. A value of `0` is
+    /// treated as "no explicit limit" too, so a hand-edited config cannot
+    /// accidentally reject every transfer.
+    #[serde(rename = "maxIncomingBytes", default)]
+    pub max_incoming_bytes: Option<u64>,
 }
 
 pub struct KdeConnectConfig {
@@ -77,6 +85,7 @@ impl KdeConnectConfig {
                 device_id: String::new(),
                 device_type: DeviceType::Desktop,
                 incoming_path: None,
+                max_incoming_bytes: None,
             },
         };
 
@@ -194,6 +203,17 @@ impl KdeConnectConfig {
 
     pub fn incoming_path(&self) -> Option<&PathBuf> {
         self.settings.incoming_path.as_ref()
+    }
+
+    /// The configured ceiling on a single incoming file, or `None` for the
+    /// default. A configured zero is treated as unset.
+    pub fn max_incoming_bytes(&self) -> Option<u64> {
+        self.settings.max_incoming_bytes.filter(|n| *n > 0)
+    }
+
+    /// Store the ceiling. Values of zero clear it, restoring the default.
+    pub fn set_max_incoming_bytes(&mut self, bytes: Option<u64>) {
+        self.settings.max_incoming_bytes = bytes.filter(|n| *n > 0);
     }
 
     pub fn identity(&self) -> &DeviceIdentity {

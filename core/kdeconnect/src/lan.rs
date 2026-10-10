@@ -24,6 +24,15 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::sync::Semaphore;
+
+/// How long an inbound connection has to identify itself and complete TLS
+/// before it is abandoned. A peer that opens a socket and then says nothing
+/// must not be able to occupy a slot indefinitely.
+const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum number of inbound KDE Connect connections handled concurrently.
+pub const MAX_INBOUND_CONNECTIONS: usize = 24;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
 use crate::config::KdeConnectConfig;
@@ -359,6 +368,7 @@ impl LanLinkProvider {
             devices: self.devices.clone(),
             links: self.links.clone(),
             settings: self.settings.clone(),
+            inbound_connections: Arc::new(Semaphore::new(MAX_INBOUND_CONNECTIONS)),
         })
     }
 
@@ -485,6 +495,15 @@ pub struct LinkContext {
     pub devices: Arc<RwLock<HashMap<String, KcDevice>>>,
     pub links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>>,
     pub settings: Arc<RuntimeSettings>,
+    /// Caps how many inbound connections may be handled at once.
+    ///
+    /// Every KDE Connect peer on the LAN dials every port in the range, and an
+    /// attacker can dial far more. Without a ceiling each connection costs a
+    /// task, a socket and eventually a TLS handshake — which is asymmetric
+    /// cryptography and therefore expensive — so an unbounded accept loop is a
+    /// cheap denial of service against the desktop. The limit is generous
+    /// because a busy network legitimately has several peers connecting.
+    pub inbound_connections: Arc<Semaphore>,
 }
 
 impl LinkContext {
@@ -557,13 +576,33 @@ async fn accept_loop(
     loop {
         let (socket, peer) = listener.accept().await?;
         let _ = socket.set_nodelay(true);
+
+        // Refuse rather than queue when we are already at the ceiling. Waiting
+        // on the permit here would let a flood of connections pile up as
+        // waiting tasks, which is the very thing the limit exists to prevent.
+        let permit = match ctx.inbound_connections.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                debug!("refusing a KDE Connect connection from {peer}: too many in flight");
+                drop(socket);
+                continue;
+            }
+        };
+
         let ctx = ctx.clone();
         let events = events.clone();
         let devices = devices.clone();
         let links = links.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_incoming(socket, peer, ctx.clone(), events, devices, links).await
-            {
+            // The permit is held for the whole connection and released on drop.
+            let _permit = permit;
+            let result = tokio::time::timeout(
+                INBOUND_HANDSHAKE_TIMEOUT,
+                handle_incoming(socket, peer, ctx.clone(), events.clone(), devices, links),
+            )
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("timed out establishing the link")));
+            if let Err(e) = result {
                 debug!("incoming KDE Connect connection from {peer} ended: {e}");
             }
         });
