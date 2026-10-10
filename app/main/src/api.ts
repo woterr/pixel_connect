@@ -24,6 +24,7 @@ import type {
 	SshTarget,
 	ToolAvailability,
 	TransferProgress,
+	TransportStatus,
 	Visibility,
 } from './types'
 
@@ -70,6 +71,8 @@ export const quickshareRejectTransfer = (id: string) =>
 export const kdeDevices = () => invoke<KcDevice[]>('kde_devices')
 
 export const kdeDeviceInfo = () => invoke<DeviceInfo>('kde_device_info')
+
+export const kdeTransports = () => invoke<TransportStatus[]>('kde_transports')
 
 export const kdeRefresh = () => invoke<void>('kde_refresh')
 

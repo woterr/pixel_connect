@@ -17,7 +17,19 @@ export type LinkState =
 	| 'Connected'
 	| 'Connecting'
 
-export type Transport = 'LAN' | 'Bluetooth' | 'None'
+export type Transport = 'lan' | 'bluetooth' | 'wifiDirect' | 'none'
+
+/** `available` means implemented *and* exercised against a real peer. */
+export type TransportState = 'available' | 'unverified' | 'unavailable'
+
+export interface TransportStatus {
+	transport: Transport
+	name: string
+	state: TransportState
+	summary: string
+	blocker?: string
+	carriesData: boolean
+}
 
 export type DeviceType = 'desktop' | 'laptop' | 'phone' | 'tablet' | 'tv'
 

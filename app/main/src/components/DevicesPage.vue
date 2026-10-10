@@ -131,6 +131,13 @@ async function refreshDevices() {
 	store.toast('Re-scanned the network', 'success')
 }
 
+function iconFor(t: string): string {
+	if (t === 'lan') return 'wifi'
+	if (t === 'bluetooth') return 'bluetooth'
+	if (t === 'wifiDirect') return 'wifiOff'
+	return 'link'
+}
+
 const discovered = computed(() => store.devices)
 const adb = computed(() => store.adbDevices)
 </script>
@@ -393,33 +400,46 @@ const adb = computed(() => store.adbDevices)
 			</p>
 		</section>
 
-		<!-- transports not implemented -->
+		<!-- transports, straight from the backend registry -->
 		<section class="mt-14">
-			<h3 class="pc-eyebrow mb-4">Other transports</h3>
-			<div class="grid gap-4 sm:grid-cols-2">
-				<div class="pc-card px-6 py-5">
-					<div class="flex items-center gap-2">
-						<PcIcon name="bluetooth" :size="18" class="text-faint" />
-						<p class="font-semibold">Bluetooth</p>
+			<div class="flex items-center justify-between">
+				<h3 class="pc-eyebrow">Connection methods</h3>
+				<span class="text-xs text-faint">reported by the backend</span>
+			</div>
+
+			<div class="mt-4 space-y-3">
+				<div v-for="t in store.transports" :key="t.transport" class="pc-card px-6 py-5">
+					<div class="flex flex-wrap items-center justify-between gap-3">
+						<div class="flex items-center gap-2">
+							<PcIcon
+								:name="iconFor(t.transport)"
+								:size="18"
+								:class="t.state === 'available' ? 'text-online' : 'text-faint'"
+							/>
+							<p class="font-semibold">{{ t.name }}</p>
+						</div>
+						<span
+							class="pc-chip"
+							:class="{
+								'text-online border-online/40': t.state === 'available',
+								'text-warn border-warn/40': t.state === 'unverified',
+							}"
+						>
+							{{ t.state === 'available' ? 'Available' : t.state === 'unverified' ? 'Unverified' : 'Not implemented' }}
+						</span>
 					</div>
-					<p class="mt-2 text-sm text-muted">
-						Experimental and not enabled in V1. KDE Connect's Bluetooth backend needs an
-						RFCOMM multiplexer on both sides and is disabled by default upstream. See
-						docs/architecture/v1-status.md.
-					</p>
-				</div>
-				<div class="pc-card px-6 py-5">
-					<div class="flex items-center gap-2">
-						<PcIcon name="wifiOff" :size="18" class="text-faint" />
-						<p class="font-semibold">Wi-Fi Direct</p>
-					</div>
-					<p class="mt-2 text-sm text-muted">
-						Not available in V1. KDE Connect has no Wi-Fi Direct support at all; a P2P
-						group would have to be created from scratch on both the Linux and Android side.
-						Feasibility notes are in docs/architecture/v1-status.md.
+
+					<p class="mt-2 text-sm text-muted">{{ t.summary }}</p>
+					<p v-if="t.blocker" class="mt-3 text-sm leading-relaxed text-faint">
+						{{ t.blocker }}
 					</p>
 				</div>
 			</div>
+
+			<p class="mt-4 text-xs text-faint">
+				Nothing above is claimed to work unless the backend has exercised it. Findings and
+				measurements are in <code>docs/architecture/v2-transport-findings.md</code>.
+			</p>
 		</section>
 	</div>
 </template>

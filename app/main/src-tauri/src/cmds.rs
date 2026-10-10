@@ -398,6 +398,11 @@ pub fn clipboard_write(text: String) {
 }
 
 #[tauri::command]
+pub fn kde_transports() -> Vec<pixel_connect_kdeconnect::TransportStatus> {
+    pixel_connect_kdeconnect::transport::registry()
+}
+
+#[tauri::command]
 pub fn clipboard_capabilities() -> serde_json::Value {
     serde_json::to_value(crate::clipboard::capabilities()).unwrap_or(serde_json::Value::Null)
 }

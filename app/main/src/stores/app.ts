@@ -20,6 +20,7 @@ import type {
 	Settings,
 	ToolAvailability,
 	TransferProgress,
+	TransportStatus,
 } from '../types'
 
 export interface Toast {
@@ -41,6 +42,7 @@ export const useAppStore = defineStore('app', () => {
 	const clipboardCaps = ref<ClipboardCapabilities | null>(null)
 	const filemanager = ref<FileManagerStatus | null>(null)
 	const scrcpySessions = ref<string[]>([])
+	const transports = ref<TransportStatus[]>([])
 
 	// ---- Quick Share state -------------------------------------------
 	const quickshareState = ref<ChannelMessage['state']>(null)
@@ -141,6 +143,7 @@ export const useAppStore = defineStore('app', () => {
 			notifications.value = await api.kdeNotifications()
 			adbDevices.value = await api.adbDevices()
 			scrcpySessions.value = await api.scrcpyRunning()
+			transports.value = await api.kdeTransports()
 		} catch (e) {
 			toast(`Could not initialise the backend: ${e}`, 'error')
 		}
@@ -187,6 +190,7 @@ export const useAppStore = defineStore('app', () => {
 		clipboardCaps,
 		filemanager,
 		scrcpySessions,
+		transports,
 		quickshareState,
 		quickshareMeta,
 		quickshareEndpoints,

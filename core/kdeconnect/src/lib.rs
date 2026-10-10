@@ -23,6 +23,7 @@ pub mod link;
 pub mod packet;
 pub mod pairing;
 pub mod tls;
+pub mod transport;
 pub mod tls_verify;
 pub mod types;
 
@@ -37,7 +38,8 @@ pub use deviceinfo::{DeviceInfo, DeviceType};
 pub use lan::{KcEvent, LanLinkProvider, LinkCommand, RuntimeSettings};
 pub use tls::{TlsContext, TlsRole};
 pub use packet::{NetworkPacket, PROTOCOL_VERSION};
-pub use types::{ConnectivityReport, KcDevice, LinkState, RemoteNotification, ShareOffer, Transport, TransferProgress};
+pub use transport::{Transport, TransportState, TransportStatus};
+pub use types::{ConnectivityReport, KcDevice, LinkState, RemoteNotification, ShareOffer, TransferProgress};
 
 /// Number of buffered events before slow receivers start losing them.
 const EVENT_BUFFER: usize = 256;

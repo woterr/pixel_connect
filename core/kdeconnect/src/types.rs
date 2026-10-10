@@ -11,26 +11,10 @@ use crate::deviceinfo::DeviceType;
 use crate::pairing::PairState;
 
 /// How the current session reaches the peer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub enum Transport {
-    /// TCP + TLS over the local network, KDE Connect protocol v8.
-    Lan,
-    /// Bluetooth RFCOMM + the KDE Connect multiplexing protocol.
-    Bluetooth,
-    /// No live transport.
-    None,
-}
-
-impl Transport {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Transport::Lan => "LAN",
-            Transport::Bluetooth => "Bluetooth",
-            Transport::None => "None",
-        }
-    }
-}
+///
+/// Defined in `crate::transport` alongside the registry that reports which
+/// transports are actually implemented.
+pub use crate::transport::Transport;
 
 /// Why a device is not reachable, if it isn't.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

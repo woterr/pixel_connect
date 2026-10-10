@@ -18,7 +18,7 @@ function device(overrides: Partial<KcDevice> = {}): KcDevice {
 		protocolVersion: 8,
 		pairState: 'Paired',
 		linkState: 'Connected',
-		transport: 'LAN',
+		transport: 'lan',
 		address: '192.168.1.42:1717',
 		incomingCapabilities: ['kdeconnect.clipboard'],
 		outgoingCapabilities: ['kdeconnect.share.request'],
