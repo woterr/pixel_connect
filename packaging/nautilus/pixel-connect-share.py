@@ -130,7 +130,14 @@ def send(paths, device_id=None):
 
 
 class PixelConnectMenuProvider(GObject.GObject, Nautilus.MenuProvider):
-    """Adds “Send to Pixel” to the Nautilus file context menu."""
+    """Adds "Send to Pixel" to the Nautilus file context menu."""
+
+    # Nautilus instantiates the class found in this module. The type name has to
+    # be declared explicitly: the previous `GObject.type_register()` call
+    # registered the type under a derived name, and instantiating the class then
+    # raised `SystemError: returned a result with an exception set`, so Nautilus
+    # silently dropped the extension and no context-menu entry ever appeared.
+    __gtype_name__ = "PixelConnectMenuProvider"
 
     def _eligible(self, files):
         """Only offer the action for local, existing, non-hidden files."""
@@ -162,6 +169,16 @@ class PixelConnectMenuProvider(GObject.GObject, Nautilus.MenuProvider):
         if not self._eligible(files):
             return []
         return [self._background_items("PixelConnect::send_files", files)]
+
+    def get_item_for_file(self, file):
+        """Called once per file by Nautilus 4.x.
+
+        This is the method Nautilus actually uses on current versions;
+        implementing only `get_file_items` leaves no entry in the menu at all.
+        """
+        if not self._eligible([file]):
+            return None
+        return self._background_items("PixelConnect::send_one", [file])
 
     def _on_activate(self, _item, files):
         uris = []

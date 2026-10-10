@@ -478,3 +478,190 @@ DEADBEEF               unauthorized usb:1-7\n";
         assert!(parse_devices(output, true).is_empty());
     }
 }
+
+// ---- wireless ADB --------------------------------------------------------
+
+/// A wireless debugging endpoint announced over mDNS.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WirelessTarget {
+    /// `host:port` ready to hand to `adb connect`.
+    pub address: String,
+    /// The phone name from the mDNS record, when it carries one.
+    pub name: Option<String>,
+    /// `connect` for a paired device, `pair` for one still needing a code.
+    pub kind: WirelessKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WirelessKind {
+    /// `_adb-tls-connect._tcp` - already paired, `adb connect` will work.
+    Connect,
+    /// `_adb-tls-pairing._tcp` - needs the pairing code from the phone first.
+    Pair,
+}
+
+/// Parse `adb mdns services` output.
+///
+/// Android publishes two records per wireless-debugging session: a *connect*
+/// endpoint once the device has been paired, and a *pairing* endpoint that
+/// needs the code shown on screen. Only the connect endpoint is usable without
+/// the user, so the two are reported separately rather than merged.
+pub fn parse_mdns_services(output: &str) -> Vec<WirelessTarget> {
+    let mut out = Vec::new();
+    for line in output.lines() {
+        // e.g. "adb-XYZ123     _adb-tls-connect._tcp.   192.168.1.5:41337"
+        let Some((instance, rest)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let rest = rest.trim();
+        let kind = if rest.starts_with("_adb-tls-connect") {
+            WirelessKind::Connect
+        } else if rest.starts_with("_adb-tls-pairing") {
+            WirelessKind::Pair
+        } else {
+            continue;
+        };
+        let Some(address) = rest
+            .split_whitespace()
+            .find(|t| t.contains(':') && !t.ends_with(':'))
+        else {
+            continue;
+        };
+        if !address
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == ':')
+        {
+            continue;
+        }
+        // Android's instance name is "adb-<model>-<serial>"; show just the model.
+        let name = instance
+            .strip_prefix("adb-")
+            .map(|s| s.rsplit_once('-').map(|(m, _)| m).unwrap_or(s))
+            .map(|s| s.replace('_', " "))
+            .filter(|s| !s.is_empty());
+        out.push(WirelessTarget {
+            address: address.to_string(),
+            name,
+            kind,
+        });
+    }
+    out
+}
+
+/// List wireless debugging endpoints the phone is currently announcing.
+pub async fn list_wireless(adb: &str) -> Result<Vec<WirelessTarget>, String> {
+    let out = Command::new(adb)
+        .args(["mdns", "services"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|e| format!("could not run adb: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(parse_mdns_services(&text))
+}
+
+/// Attempt `adb connect <address>`.
+///
+/// The address is validated here and passed as a single argv entry, so a
+/// crafted value cannot smuggle in an extra adb option.
+pub async fn connect_wireless(adb: &str, address: &str) -> Result<String, String> {
+    let address = address.trim();
+    if address.is_empty() {
+        return Err("no wireless address given".into());
+    }
+    let valid = address.contains(':')
+        && address
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == ':');
+    if !valid {
+        return Err(format!("{address:?} is not a host:port address"));
+    }
+    let out = Command::new(adb)
+        .args(["connect", address])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|e| format!("could not run adb: {e}"))?;
+
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.contains("failed to connect") || text.contains("cannot connect") {
+        return Err(text);
+    }
+    if text.contains("already connected") {
+        return Ok(format!("{address} was already connected"));
+    }
+    if text.is_empty() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(text)
+}
+
+#[cfg(test)]
+mod wireless_tests {
+    use super::*;
+
+    const SAMPLE: &str = "\
+adb-ABC123       _adb-tls-connect._tcp.   192.168.1.5:41337
+adb-ABC123       _adb-tls-pairing._tcp.   192.168.1.5:39811
+NotAnAdb        _http._tcp.               192.168.1.9:80
+";
+
+    #[test]
+    fn connect_and_pair_endpoints_are_told_apart() {
+        let targets = parse_mdns_services(SAMPLE);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].kind, WirelessKind::Connect);
+        assert_eq!(targets[0].address, "192.168.1.5:41337");
+        assert_eq!(targets[1].kind, WirelessKind::Pair);
+    }
+
+    #[test]
+    fn unrelated_services_are_ignored() {
+        let targets = parse_mdns_services(SAMPLE);
+        assert!(targets
+            .iter()
+            .all(|t| t.address.ends_with(":41337") || t.address.ends_with(":39811")));
+    }
+
+    #[test]
+    fn the_model_is_derived_from_the_instance_name() {
+        let targets =
+            parse_mdns_services("adb-Pixel_8-ABC123  _adb-tls-connect._tcp.  10.0.0.5:5555");
+        assert_eq!(targets[0].name.as_deref(), Some("Pixel 8"));
+    }
+
+    #[test]
+    fn garbage_produces_nothing_rather_than_panicking() {
+        for junk in [
+            "",
+            "adb-X  nonsense",
+            "\n\n",
+            "adb-X _adb-tls-connect._tcp.",
+        ] {
+            let _ = parse_mdns_services(junk);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_crafted_address_is_rejected_before_reaching_adb() {
+        // An address carrying an extra adb option must never be passed through.
+        for bad in [
+            "-s",
+            "1.2.3.4:5555 --some-flag",
+            "host:port; rm -rf /",
+            "",
+            "1.2.3.4",
+        ] {
+            assert!(
+                connect_wireless("/nonexistent-adb", bad).await.is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+}

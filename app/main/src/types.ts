@@ -146,6 +146,18 @@ export interface ConnectivityState {
 
 export type ConnectionKind = 'usb' | 'wireless' | 'emulator'
 
+export type WirelessKind = 'connect' | 'pair'
+
+/** A wireless-debugging endpoint announced by the phone over mDNS. */
+export interface WirelessTarget {
+	/** `host:port`, ready for `adb connect`. */
+	address: string
+	/** Phone model, when the announcement carries one. */
+	name: string | null
+	/** `connect` when already paired; `pair` when a code is needed first. */
+	kind: WirelessKind
+}
+
 export interface AdbDevice {
 	serial: string
 	state: string

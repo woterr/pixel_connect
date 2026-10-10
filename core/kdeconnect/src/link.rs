@@ -201,7 +201,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
             name: self.peer.name.clone(),
             device_type: self.peer.device_type,
             protocol_version: self.peer.protocol_version,
-            pair_state: self.pairing.state(),
+            pair_state: if trusted {
+                // A new link always starts with a fresh pairing handler, so
+                // `self.pairing.state()` is `NotPaired` even for a device that
+                // has been trusted for months. The trust store is the
+                // authority, exactly as in `publish_discovered`; without this a
+                // paired device is reported as "Not paired" every time the link
+                // is re-established.
+                crate::pairing::PairState::Paired
+            } else {
+                self.pairing.state()
+            },
             link_state: if connected {
                 LinkState::Connected
             } else {

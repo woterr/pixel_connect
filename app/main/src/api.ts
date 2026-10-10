@@ -23,6 +23,7 @@ import type {
 	SshProbe,
 	SshTarget,
 	ToolAvailability,
+	WirelessTarget,
 	TransferProgress,
 	TransportStatus,
 	Visibility,
@@ -153,6 +154,11 @@ export const scrcpyLaunch = (serial: string, args: string[] = []) =>
 	invoke<ScrcpyLaunch>('scrcpy_launch', { serial, args })
 
 export const scrcpyStop = (serial: string) => invoke<boolean>('scrcpy_stop', { serial })
+
+export const adbListWireless = () => invoke<WirelessTarget[]>('adb_list_wireless')
+
+export const adbConnectWireless = (address: string) =>
+	invoke<string>('adb_connect_wireless', { address })
 
 export const scrcpyRunning = () => invoke<string[]>('scrcpy_running')
 

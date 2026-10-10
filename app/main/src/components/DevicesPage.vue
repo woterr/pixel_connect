@@ -16,7 +16,7 @@ import PcIcon from './atoms/PcIcon.vue'
 import { useAppStore } from '../stores/app'
 import * as api from '../api'
 import { deviceTypeLabel, timeAgo } from '../utils'
-import type { KcDevice } from '../types'
+import type { KcDevice, WirelessTarget } from '../types'
 
 const store = useAppStore()
 const busy = ref<string | null>(null)
@@ -40,8 +40,25 @@ function stateLabel(d: KcDevice): string {
 	if (d.linkState === 'Connecting') return 'Connecting…'
 	if (d.linkState === 'PairingRequested') return 'Pairing requested'
 	if (d.linkState === 'PairingRequestedByPeer') return 'Pairing requested by the phone'
-	if (d.pairState === 'Paired') return 'Paired, not connected'
+	if (d.trusted) return 'Paired, not connected'
 	return 'Not paired'
+}
+
+/**
+ * The one line under the device name.
+ *
+ * Connection state is what someone acts on, so that leads. Battery is appended
+ * only when the phone actually reports it, because the field is absent until a
+ * `kdeconnect.battery` packet arrives and showing a bare "0%" reads as "the
+ * phone is dead" when it really means "no data yet".
+ */
+function headline(d: KcDevice): string {
+	const parts = [stateLabel(d)]
+	if (d.batteryLevel !== null && d.batteryLevel !== undefined) {
+		parts.push(`${d.batteryLevel}%${d.batteryIsCharging ? ' ⚡' : ''}`)
+	}
+	if (!d.trusted) parts.unshift(deviceTypeLabel(d.type))
+	return parts.join(' · ')
 }
 
 function stateTone(d: KcDevice): string {
@@ -76,14 +93,8 @@ async function act(device: KcDevice, action: 'pair' | 'accept' | 'reject' | 'unp
 				store.toast(`Ping sent to ${device.name}`, 'success')
 				break
 			case 'mirroring': {
-				if (device.linkState !== 'Connected') {
-					store.toast('The phone must be connected over the network to be mirrored.', 'error')
-					return
-				}
-				store.toast(
-					'Screen mirroring uses scrcpy over ADB. Pick the device under "Android over USB" below.',
-					'info',
-				)
+				await mirrorScreen(device)
+				return
 			}
 		}
 		store.refreshAll()
@@ -106,6 +117,82 @@ async function setPreferred(device: KcDevice) {
 }
 
 // ---- ADB / scrcpy --------------------------------------------------------
+
+/**
+ * Mirror a paired phone's screen with scrcpy.
+ *
+ * scrcpy talks to Android over ADB, not over KDE Connect, so this has to find
+ * the ADB device that corresponds to the phone. Matching is done on the device
+ * name/model with an underscore/dash-insensitive comparison, because ADB
+ * reports "Pixel_8" where KDE Connect reports "Pixel 8".
+ *
+ * When exactly one authorised device is attached there is no ambiguity and it
+ * is used directly. Otherwise the user is told what is actually attached
+ * rather than being sent to another screen to find out.
+ */
+async function mirrorScreen(device: KcDevice) {
+	const wanted = device.name.toLowerCase().replace(/[_\s-]/g, '')
+	const ready = store.adbDevices.filter((d) => d.state === 'device' && d.scrcpyReady)
+
+	const exact = ready.find((d) =>
+		[d.model, d.product, d.device]
+			.filter((x): x is string => !!x)
+			.some((x) => x.toLowerCase().replace(/[_\s-]/g, '') === wanted),
+	)
+
+	const target = exact ?? (ready.length === 1 ? ready[0] : null)
+
+	if (!target) {
+		const attached = store.adbDevices.length
+		store.toast(
+			attached === 0
+				? 'Connect the phone by USB and enable USB debugging to mirror its screen.'
+				: ready.length > 1
+					? `Several devices are attached (${ready.map((d) => d.label).join(', ')}). Choose one below.`
+					: 'The attached device is not ready for scrcpy. Check the USB debugging authorisation prompt.',
+			'error',
+		)
+		return
+	}
+
+	await launchScrcpy(target.serial)
+}
+
+const wirelessTargets = ref<WirelessTarget[]>([])
+const wirelessBusy = ref<string | null>(null)
+
+/** Ask the phone, over mDNS, for any wireless-debugging endpoints. */
+async function scanWireless() {
+	wirelessBusy.value = 'scan'
+	try {
+		const found = await api.adbListWireless()
+		wirelessTargets.value = found
+		if (!found.length) {
+			store.toast(
+				'Nothing advertised. Turn on Wireless debugging on the phone and keep it in the foreground.',
+				'info',
+			)
+		}
+	} catch (e) {
+		store.toast(`Wireless scan failed: ${e}`, 'error')
+	} finally {
+		wirelessBusy.value = null
+	}
+}
+
+/** Connect to a discovered endpoint, then refresh the device list. */
+async function connectWireless(target: WirelessTarget) {
+	wirelessBusy.value = target.address
+	try {
+		const msg = await api.adbConnectWireless(target.address)
+		store.toast(msg, 'success')
+		await store.refreshAll()
+	} catch (e) {
+		store.toast(`Could not connect: ${e}`, 'error')
+	} finally {
+		wirelessBusy.value = null
+	}
+}
 
 async function launchScrcpy(serial: string) {
 	busy.value = `adb:${serial}`
@@ -172,9 +259,7 @@ const adb = computed(() => store.adbDevices)
 							<span class="pc-status-dot" :class="stateTone(device)" />
 							<div>
 								<h4 class="text-lg font-semibold">{{ device.name }}</h4>
-								<p class="text-sm text-muted">
-									{{ deviceTypeLabel(device.type) }} · {{ stateLabel(device) }}
-								</p>
+								<p class="text-sm text-muted">{{ headline(device) }}</p>
 							</div>
 						</div>
 						<div class="flex flex-wrap gap-2">
@@ -232,48 +317,44 @@ const adb = computed(() => store.adbDevices)
 						</span>
 					</div>
 
-					<!-- detail grid -->
-					<dl class="mt-5 grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2">
-						<div class="flex justify-between gap-4">
-							<dt class="text-muted">Transport</dt>
-							<dd class="text-right font-medium">{{ device.transport }}</dd>
-						</div>
-						<div class="flex justify-between gap-4">
-							<dt class="text-muted">Address</dt>
-							<dd class="truncate text-right font-medium">{{ device.address ?? '—' }}</dd>
-						</div>
-						<div class="flex justify-between gap-4">
-							<dt class="text-muted">Protocol</dt>
-							<dd class="text-right font-medium">v{{ device.protocolVersion }}</dd>
-						</div>
-						<div class="flex justify-between gap-4">
-							<dt class="text-muted">Last seen</dt>
-							<dd class="text-right font-medium">{{ timeAgo(device.lastSeen) }}</dd>
-						</div>
-						<div v-if="device.batteryLevel !== null" class="flex justify-between gap-4">
-							<dt class="text-muted">Battery</dt>
-							<dd class="text-right font-medium">
-								{{ device.batteryLevel }}%<span v-if="device.batteryIsCharging"> ⚡</span>
-							</dd>
-						</div>
-						<div class="flex justify-between gap-4">
-							<dt class="text-muted">Device id</dt>
-							<dd class="truncate text-right font-mono text-xs">{{ device.id }}</dd>
-						</div>
-					</dl>
-
-					<!-- features -->
-					<div class="mt-5">
-						<p class="pc-eyebrow mb-2">Available features</p>
-						<div v-if="device.features.length" class="flex flex-wrap gap-2">
+					<!--
+						Protocol-level detail (transport, address, device id, the
+						capability chips) is diagnostic, not something a user needs
+						to act on. It is hidden behind a toggle so the card shows
+						only what someone would use to decide what to do next.
+					-->
+					<details class="mt-4">
+						<summary class="cursor-pointer text-xs text-faint hover:text-muted">
+							Connection details
+						</summary>
+						<dl class="mt-3 grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2">
+							<div class="flex justify-between gap-4">
+								<dt class="text-muted">Transport</dt>
+								<dd class="text-right font-medium">{{ device.transport }}</dd>
+							</div>
+							<div class="flex justify-between gap-4">
+								<dt class="text-muted">Address</dt>
+								<dd class="truncate text-right font-medium">{{ device.address ?? '—' }}</dd>
+							</div>
+							<div class="flex justify-between gap-4">
+								<dt class="text-muted">Protocol</dt>
+								<dd class="text-right font-medium">v{{ device.protocolVersion }}</dd>
+							</div>
+							<div class="flex justify-between gap-4">
+								<dt class="text-muted">Last seen</dt>
+								<dd class="text-right font-medium">{{ timeAgo(device.lastSeen) }}</dd>
+							</div>
+							<div class="flex justify-between gap-4">
+								<dt class="text-muted">Device id</dt>
+								<dd class="truncate text-right font-mono text-xs">{{ device.id }}</dd>
+							</div>
+						</dl>
+						<div v-if="device.features.length" class="mt-3 flex flex-wrap gap-2">
 							<span v-for="f in device.features" :key="f" class="pc-chip">
 								{{ featureLabel(f) }}
 							</span>
 						</div>
-						<p v-else class="text-sm text-faint">
-							This device has not advertised any capabilities yet.
-						</p>
-					</div>
+					</details>
 
 					<!-- errors / recovery -->
 					<div
@@ -332,14 +413,61 @@ const adb = computed(() => store.adbDevices)
 		<!-- ADB / scrcpy -->
 		<section class="mt-14">
 			<div class="flex items-center justify-between">
-				<h3 class="pc-eyebrow">Android over USB</h3>
+				<h3 class="pc-eyebrow">Android over USB or Wi-Fi</h3>
 				<span class="text-xs text-faint">
 					{{ store.tools?.adbPath ? 'adb detected' : 'adb not found' }} ·
 					{{ store.tools?.scrcpyPath ? 'scrcpy detected' : 'scrcpy not found' }}
 				</span>
 			</div>
 
-			<div v-if="store.tools?.error" class="pc-card mt-4 px-6 py-5 text-sm">
+			<div class="pc-card mt-4 px-6 py-5">
+				<div class="flex flex-wrap items-center justify-between gap-3">
+					<div>
+						<p class="font-semibold">Wireless</p>
+						<p class="mt-0.5 text-sm text-muted">
+							Mirror the phone without a cable. On the phone open
+							<span class="font-medium">Settings → Developer options → Wireless debugging</span>
+							and leave it showing.
+						</p>
+					</div>
+					<button
+						class="pc-btn pc-btn-secondary pc-btn-sm"
+						:disabled="wirelessBusy === 'scan'"
+						@click="scanWireless"
+					>
+						{{ wirelessBusy === 'scan' ? 'Searching…' : 'Find my phone' }}
+					</button>
+				</div>
+
+				<div v-if="wirelessTargets.length" class="mt-4 space-y-2">
+					<div
+						v-for="t in wirelessTargets"
+						:key="t.address + t.kind"
+						class="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-inset px-4 py-3"
+					>
+						<div class="min-w-0">
+							<p class="text-sm font-medium">
+								{{ t.name ?? 'Android device' }}
+								<span class="ml-2 text-xs text-faint">{{ t.address }}</span>
+							</p>
+							<p v-if="t.kind === 'pair'" class="text-xs text-warn">
+								Not paired yet — pair it once from Wireless debugging on the phone,
+								then scan again.
+							</p>
+						</div>
+						<button
+							v-if="t.kind === 'connect'"
+							class="pc-btn pc-btn-primary pc-btn-sm"
+							:disabled="wirelessBusy === t.address"
+							@click="connectWireless(t)"
+						>
+							Connect
+						</button>
+					</div>
+				</div>
+			</div>
+
+<div v-if="store.tools?.error" class="pc-card mt-4 px-6 py-5 text-sm">
 				<div class="flex items-start gap-3">
 					<PcIcon name="alert" :size="18" class="mt-0.5 text-warn" />
 					<div>

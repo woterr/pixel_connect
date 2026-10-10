@@ -127,6 +127,8 @@ async fn main() -> Result<(), anyhow::Error> {
             cmds::scrcpy_launch,
             cmds::scrcpy_stop,
             cmds::scrcpy_running,
+            cmds::adb_list_wireless,
+            cmds::adb_connect_wireless,
             // SSH
             cmds::ssh_probe,
             cmds::ssh_open,

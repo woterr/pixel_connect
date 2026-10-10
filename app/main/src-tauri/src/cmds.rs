@@ -470,6 +470,26 @@ pub async fn scrcpy_stop(state: Shared<'_>, serial: String) -> Result<bool, Stri
     crate::adb::stop_scrcpy(state.inner().adb.as_ref(), &serial).await
 }
 
+/// Wireless debugging endpoints the phone is currently advertising over mDNS.
+#[tauri::command]
+pub async fn adb_list_wireless() -> Result<Vec<crate::adb::WirelessTarget>, String> {
+    let st = crate::adb::detect(&crate::adb::AdbState::default()).await;
+    match st.adb_path {
+        Some(bin) => crate::adb::list_wireless(&bin).await,
+        None => Err("adb is not installed".into()),
+    }
+}
+
+/// Connect to a wireless debugging endpoint discovered over mDNS.
+#[tauri::command]
+pub async fn adb_connect_wireless(address: String) -> Result<String, String> {
+    let st = crate::adb::detect(&crate::adb::AdbState::default()).await;
+    match st.adb_path {
+        Some(bin) => crate::adb::connect_wireless(&bin, &address).await,
+        None => Err("adb is not installed".into()),
+    }
+}
+
 #[tauri::command]
 pub async fn scrcpy_running(state: Shared<'_>) -> Result<Vec<String>, String> {
     crate::adb::prune(state.inner().adb.as_ref()).await;
