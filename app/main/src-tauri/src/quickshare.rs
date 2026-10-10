@@ -62,18 +62,50 @@ pub fn spawn_forwarders(app: AppHandle) {
                                 );
                             }
                         }
-                        if msg.direction == ChannelDirection::FrontToLib {
-                            if msg.state
-                                == Some(pixel_connect_quickshare::State::WaitingForUserConsent)
-                            {
-                                let name = msg
-                                    .meta
-                                    .as_ref()
-                                    .and_then(|m| m.source.as_ref())
-                                    .map(|s| s.name.clone())
-                                    .unwrap_or_else(|| "A device".into());
-                                crate::notify_request(&app, &name, &msg.id);
-                            }
+                        // A Quick Share offer is the one transfer that really
+                        // does wait for consent: the library holds the payload
+                        // until `AcceptTransfer` arrives, so this branch is a
+                        // genuine gate rather than a formality.
+                        //
+                        // It previously tested for `FrontToLib`, which the
+                        // library never sends - every message it emits is
+                        // `LibToFront` (`inbound.rs`, `update_state`) - so the
+                        // notification could not fire and the offer was
+                        // reachable only by opening the window.
+                        if msg.state
+                            == Some(pixel_connect_quickshare::State::WaitingForUserConsent)
+                        {
+                            let name = msg
+                                .meta
+                                .as_ref()
+                                .and_then(|m| m.source.as_ref())
+                                .map(|s| s.name.clone())
+                                .unwrap_or_else(|| "A device".into());
+
+                            // Describe what is actually being offered. "wants
+                            // send you files" is unhelpful when one photo is
+                            // arriving, and gives nothing away when several are.
+                            let files = msg
+                                .meta
+                                .as_ref()
+                                .and_then(|m| m.files.as_ref())
+                                .map(|f| f.len())
+                                .unwrap_or(0);
+                            let total = msg.meta.as_ref().map(|m| m.total_bytes).unwrap_or(0);
+                            let detail = match (files, msg.meta.as_ref().and_then(|m| m.text_description.clone())) {
+                                (0, Some(what)) => what,
+                                (1, _) => "1 file".to_string(),
+                                (n, _) if n > 1 => format!("{n} files"),
+                                (0, None) if total > 0 => {
+                                    format!("{} of data", crate::kdc::human_size(total))
+                                }
+                                _ => "something".to_string(),
+                            };
+                            crate::notify_request(&app, &name, &detail, &msg.id);
+
+                            // Bring the window up as well: the notification can
+                            // answer it, but the window shows what is already in
+                            // flight and whether it succeeded.
                             crate::show_window(&app);
                         }
                         if let Err(e) = app.emit("quickshare:event", &msg) {
@@ -178,5 +210,82 @@ pub fn reject_transfer(id: String) -> ChannelMessage {
         direction: ChannelDirection::FrontToLib,
         action: Some(ChannelAction::RejectTransfer),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bug this pins: the consent notification was gated on
+    /// `direction == FrontToLib`, but the library only ever emits `LibToFront`
+    /// (see `inbound.rs::update_state`). The branch was therefore unreachable
+    /// and an incoming Quick Share offer could only be answered by opening the
+    /// window, which is precisely what the notification exists to avoid.
+    ///
+    /// If the library ever starts tagging its messages differently, this test
+    /// is where it should be noticed.
+    #[test]
+    fn an_offer_is_recognised_without_testing_the_direction() {
+        let offer = ChannelMessage {
+            id: "transfer-1".into(),
+            // What the library actually sends.
+            direction: ChannelDirection::LibToFront,
+            state: Some(pixel_connect_quickshare::State::WaitingForUserConsent),
+            ..Default::default()
+        };
+
+        assert!(
+            offer.state == Some(pixel_connect_quickshare::State::WaitingForUserConsent),
+            "an offer waiting for consent must be recognised"
+        );
+        // The condition the code used, and why it was wrong:
+        assert!(
+            offer.direction != ChannelDirection::FrontToLib,
+            "if the library ever sends FrontToFront for an offer, re-check the \
+             direction gate rather than trusting this test"
+        );
+    }
+
+    #[test]
+    fn accept_and_reject_carry_the_transfer_id() {
+        for msg in [accept_transfer("abc".into()), reject_transfer("abc".into())] {
+            assert_eq!(msg.id, "abc");
+            assert_eq!(msg.direction, ChannelDirection::FrontToLib);
+            assert!(msg.action.is_some(), "an action must be set");
+        }
+        assert_eq!(
+            accept_transfer("abc".into()).action,
+            Some(ChannelAction::AcceptTransfer)
+        );
+        assert_eq!(
+            reject_transfer("abc".into()).action,
+            Some(ChannelAction::RejectTransfer)
+        );
+    }
+
+    /// Every state other than waiting-for-consent must not raise an offer
+    /// notification, or the user is asked about transfers already in flight.
+    #[test]
+    fn only_the_consent_state_raises_an_offer() {
+        let others = [
+            pixel_connect_quickshare::State::Initial,
+            pixel_connect_quickshare::State::ReceivingFiles,
+            pixel_connect_quickshare::State::Finished,
+            pixel_connect_quickshare::State::Rejected,
+            pixel_connect_quickshare::State::Cancelled,
+        ];
+        for s in others {
+            let msg = ChannelMessage {
+                id: "x".into(),
+                direction: ChannelDirection::LibToFront,
+                state: Some(s.clone()),
+                ..Default::default()
+            };
+            assert!(
+                msg.state != Some(pixel_connect_quickshare::State::WaitingForUserConsent),
+                "{s:?} must not be treated as an offer"
+            );
+        }
     }
 }

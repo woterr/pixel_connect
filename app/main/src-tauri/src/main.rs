@@ -444,13 +444,28 @@ pub fn notify_send_result(app: &AppHandle, sent: usize, device: Option<&str>) {
     let _ = app;
 }
 
-pub fn notify_request(app: &AppHandle, name: &str, id: &str) {
+/// An incoming Quick Share offer, answerable straight from the notification.
+///
+/// Unlike a KDE Connect share, this one is a genuine gate: the Quick Share
+/// library holds the payload until `AcceptTransfer` arrives, so rejecting here
+/// really does stop the transfer.
+pub fn notify_request(app: &AppHandle, name: &str, detail: &str, id: &str) {
+    // Honour the same per-category switch as every other notification. A user
+    // who silences incoming shares must not still get a Quick Share one.
+    if !crate::settings::get_bool(app, "notify_share_request") {
+        return;
+    }
+
+    let body = format!("{name} wants to share {detail}");
+    log::info!("quickshare offer: {body}");
+
     #[cfg(target_os = "linux")]
     {
         use notify_rust::Notification;
         match Notification::new()
             .summary("Pixel Connect")
-            .body(&format!("{name} wants to send you files"))
+            .body(&body)
+            .appname("Pixel Connect")
             .action("accept", "Accept")
             .action("reject", "Reject")
             .show()
@@ -459,20 +474,34 @@ pub fn notify_request(app: &AppHandle, name: &str, id: &str) {
                 let handle = app.clone();
                 let transfer_id = id.to_string();
                 tauri::async_runtime::spawn(async move {
+                    // The callback is what `notify-rust` invokes when the user
+                    // clicks a button, so the decision is handled here. Logging
+                    // each branch keeps a dead notification from being
+                    // indistinguishable from a broken one.
                     n.wait_for_action(|action| match action {
                         "accept" => {
-                            let _ = crate::quickshare::send_to_lib(
+                            if let Err(e) = crate::quickshare::send_to_lib(
                                 handle.state::<Arc<AppState>>().inner(),
                                 crate::quickshare::accept_transfer(transfer_id),
-                            );
+                            ) {
+                                log::error!("accepting from the notification failed: {e}");
+                            } else {
+                                log::info!("accepted the offer from the notification");
+                            }
                         }
                         "reject" => {
-                            let _ = crate::quickshare::send_to_lib(
+                            if let Err(e) = crate::quickshare::send_to_lib(
                                 handle.state::<Arc<AppState>>().inner(),
                                 crate::quickshare::reject_transfer(transfer_id),
-                            );
+                            ) {
+                                log::error!("rejecting from the notification failed: {e}");
+                            } else {
+                                log::info!("rejected the offer from the notification");
+                            }
                         }
-                        _ => {}
+                        // Dismissed without a decision: the offer stays pending
+                        // and the window still shows it, so nothing is lost.
+                        other => log::info!("offer closed without a decision: {other}"),
                     });
                 });
             }
@@ -481,7 +510,7 @@ pub fn notify_request(app: &AppHandle, name: &str, id: &str) {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (name, id);
-        notify("Pixel Connect", "A device wants to send you files");
+        let _ = id;
+        notify("Pixel Connect", &body);
     }
 }
