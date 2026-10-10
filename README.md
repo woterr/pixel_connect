@@ -71,6 +71,29 @@ verified against a real device.
 
 ---
 
+## Installing
+
+### For your user (no root)
+
+```bash
+./scripts/install-user.sh
+```
+
+This puts the binary in `~/.local/bin`, registers the desktop entry in
+`~/.local/share/applications`, and installs the icon set into the hicolor theme,
+so **Pixel Connect appears in the GNOME app grid** and can be launched from it.
+Pass `--uninstall` to remove everything it installed.
+
+### As a Fedora package
+
+```bash
+sudo dnf install rpm-build
+rpmbuild -bb packaging/rpm/pixel-connect.spec --define "_topdir $(pwd)/rpmbuild"
+sudo dnf install ./rpmbuild/RPMS/*/*.rpm
+```
+
+That installs the same entry, icons and the Nautilus integration system-wide.
+
 ## Building
 
 ### Dependencies
@@ -113,7 +136,30 @@ sudo dnf install ./target/release/bundle/rpm/pixel-connect-*.rpm
 
 or build the spec directly with `rpmbuild -ta packaging/rpm/pixel-connect.spec`.
 
-### Building without root (containers)
+### Installing
+
+### For your user (no root)
+
+```bash
+./scripts/install-user.sh
+```
+
+This puts the binary in `~/.local/bin`, registers the desktop entry in
+`~/.local/share/applications`, and installs the icon set into the hicolor theme,
+so **Pixel Connect appears in the GNOME app grid** and can be launched from it.
+Pass `--uninstall` to remove everything it installed.
+
+### As a Fedora package
+
+```bash
+sudo dnf install rpm-build
+rpmbuild -bb packaging/rpm/pixel-connect.spec --define "_topdir $(pwd)/rpmbuild"
+sudo dnf install ./rpmbuild/RPMS/*/*.rpm
+```
+
+That installs the same entry, icons and the Nautilus integration system-wide.
+
+## Building without root (containers)
 
 The Tauri build needs `-devel` packages. If they cannot be installed
 system-wide:

@@ -88,8 +88,18 @@ install -Dm0755 packaging/nautilus/pixel-connect-send \
 
 install -Dm0644 packaging/desktop/dev.pixelconnect.app.desktop \
     %{buildroot}%{_datadir}/applications/dev.pixelconnect.app.desktop
+# The full icon set. Installing only 128x128 left GNOME falling back to a
+# generic placeholder in several places.
+install -Dm0644 data/branding/pixel-connect-32.png \
+    %{buildroot}%{_datadir}/icons/hicolor/32x32/apps/pixel-connect.png
 install -Dm0644 data/branding/pixel-connect-128.png \
     %{buildroot}%{_datadir}/icons/hicolor/128x128/apps/pixel-connect.png
+install -Dm0644 data/branding/pixel-connect-128.png \
+    %{buildroot}%{_datadir}/icons/hicolor/128x128/apps/pixel-connect@2x.png
+install -Dm0644 data/branding/pixel-connect-256.png \
+    %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/pixel-connect.png
+install -Dm0644 app/main/src-tauri/icons/icon.png \
+    %{buildroot}%{_datadir}/icons/hicolor/512x512/apps/pixel-connect.png
 install -Dm0644 data/branding/pixel-connect-symbolic.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/pixel-connect-symbolic.svg
 
@@ -152,7 +162,11 @@ exit 0
 %{_bindir}/pixel-connect
 %{_datadir}/pixel-connect/
 %{_datadir}/applications/dev.pixelconnect.app.desktop
+%{_datadir}/icons/hicolor/32x32/apps/pixel-connect.png
 %{_datadir}/icons/hicolor/128x128/apps/pixel-connect.png
+%{_datadir}/icons/hicolor/128x128/apps/pixel-connect@2x.png
+%{_datadir}/icons/hicolor/256x256/apps/pixel-connect.png
+%{_datadir}/icons/hicolor/512x512/apps/pixel-connect.png
 %{_datadir}/icons/hicolor/scalable/apps/pixel-connect-symbolic.svg
 %{_datadir}/nautilus-python/extensions/
 
