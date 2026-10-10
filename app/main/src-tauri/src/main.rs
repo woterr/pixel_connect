@@ -103,6 +103,7 @@ async fn main() -> Result<(), anyhow::Error> {
             cmds::kde_share_files,
             cmds::kde_share_directory,
             cmds::kde_send_notification_action,
+            cmds::kde_reply_to_notification,
             cmds::kde_pending_shares,
             cmds::kde_dismiss_share,
             cmds::kde_notifications,
@@ -267,7 +268,7 @@ async fn main() -> Result<(), anyhow::Error> {
             // the background; on Wayland it cannot, so the front end pushes
             // changes here instead (see clipboard_capabilities).
             let watcher_handle = handle.clone();
-            clipboard::spawn_x11_watcher(move |text| {
+            clipboard::spawn_background_watcher(move |text| {
                 let handle = watcher_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let Some(state) = handle.try_state::<Arc<KdcState>>() else {

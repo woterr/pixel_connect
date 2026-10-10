@@ -58,6 +58,12 @@ pub enum LinkCommand {
     RequestPairing,
     AcceptPairing,
     CancelPairing,
+    /// Send a typed reply to a repliable notification.
+    ReplyToNotification {
+        notification_id: String,
+        reply_id: String,
+        text: String,
+    },
     Shutdown,
 }
 
@@ -76,7 +82,16 @@ pub enum KcEvent {
         content: String,
     },
     ShareOffer(Box<crate::types::ShareOffer>),
-    Notification(Box<crate::types::RemoteNotification>),
+    Notification {
+        device_id: String,
+        device_name: String,
+        notification: Box<crate::types::RemoteNotification>,
+    },
+    /// A typed reply was delivered to the peer.
+    NotificationReplied {
+        device_id: String,
+        notification_id: String,
+    },
     Connectivity(Box<crate::types::ConnectivityReport>),
     Battery {
         device_id: String,
@@ -695,6 +710,9 @@ pub fn capabilities_incoming() -> Vec<String> {
         p::PACKET_TYPE_SHARE_REQUEST.to_string(),
         p::PACKET_TYPE_CONNECTIVITY_REPORT.to_string(),
         p::PACKET_TYPE_NOTIFICATION.to_string(),
+        p::PACKET_TYPE_NOTIFICATION_REQUEST.to_string(),
+        p::PACKET_TYPE_NOTIFICATION_ACTION.to_string(),
+        p::PACKET_TYPE_NOTIFICATION_REPLY.to_string(),
     ]
 }
 
@@ -708,6 +726,8 @@ pub fn capabilities_outgoing() -> Vec<String> {
         p::PACKET_TYPE_SHARE_REQUEST.to_string(),
         p::PACKET_TYPE_SHARE_REQUEST_UPDATE.to_string(),
         p::PACKET_TYPE_PAIR.to_string(),
+        p::PACKET_TYPE_NOTIFICATION.to_string(),
+        p::PACKET_TYPE_NOTIFICATION_REQUEST.to_string(),
     ]
 }
 

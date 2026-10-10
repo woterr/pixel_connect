@@ -119,19 +119,41 @@ pub struct TransferProgress {
     pub error: Option<String>,
 }
 
-/// A notification received from an Android phone via the notification plugin.
+/// A notification received from a peer via the notification plugin.
+///
+/// Field names follow `kdeconnect.notification` as both implementations send
+/// it (kdeconnect-android `NotificationsPlugin.kt`, kdeconnect-kde
+/// `plugins/notifications/notification.cpp`):
+///
+/// * `id`   — the notification key; every reaction refers back to it
+/// * `actions` — a JSON **array of action titles**, not separate body keys
+/// * `requestReplyId` — present only when the notification can be replied to
+/// * `time` — Android sends this as a *string*; the desktop omits it entirely
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteNotification {
-    pub key: String,
+    /// The peer's `id` for this notification, without any local prefix.
+    pub id: String,
     pub title: String,
     pub text: String,
     #[serde(rename = "appName")]
     pub app_name: String,
+    /// Unix milliseconds. Android sends `time` as a decimal string; the desktop
+    /// omits it, so this is "now" when absent.
     pub timestamp: i64,
+    /// Action titles offered by the notification, in the order the peer sent them.
     pub actions: Vec<String>,
+    /// Set when the notification supports a typed reply. The value is the
+    /// identifier to echo back in `kdeconnect.notification.reply`.
+    #[serde(rename = "requestReplyId", skip_serializing_if = "Option::is_none")]
+    pub request_reply_id: Option<String>,
     #[serde(rename = "isClearable")]
     pub is_clearable: bool,
+    /// True when the peer marked the notification as silent/preexisting.
+    pub silent: bool,
+    /// Display name of the group, when the notification belongs to one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
 }
 
 /// Aggregate connectivity report from the phone.

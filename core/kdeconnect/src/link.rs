@@ -105,6 +105,7 @@ where
         peer: peer_info,
         peer_spki,
         peer_cert_pem,
+        notifications: Vec::new(),
         peer_addr,
         trusted,
         pairing: PairingHandler::new(),
@@ -120,6 +121,9 @@ struct DeviceLink<S: AsyncRead + AsyncWrite + Unpin> {
     ctx: Arc<LinkContext>,
     reader: LineReader<tokio::io::ReadHalf<TlsStream<S>>>,
     writer: PacketWriter<tokio::io::WriteHalf<TlsStream<S>>>,
+    /// Notifications seen on this link, newest first. Reactions look the peer
+    /// keys up here so a stale UI cannot act on a notification that is gone.
+    notifications: Vec<crate::types::RemoteNotification>,
     peer: DeviceInfo,
     peer_spki: Vec<u8>,
     /// The peer's TLS certificate in PEM, pinned once pairing completes.
@@ -266,6 +270,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                 self.publish().await;
                 Ok(())
             }
+            LinkCommand::ReplyToNotification {
+                notification_id,
+                reply_id,
+                text,
+            } => {
+                // `kdeconnect.notification.reply` carries the *reply* id the
+                // peer gave us, not the notification id, plus the message.
+                let mut np = p::NetworkPacket::new(p::PACKET_TYPE_NOTIFICATION_REPLY);
+                np.set("requestReplyId", reply_id);
+                np.set("message", text);
+                self.writer.write_packet(&np).await?;
+                let _ = self.events.send(KcEvent::NotificationReplied {
+                    device_id: self.peer.id.clone(),
+                    notification_id,
+                });
+                Ok(())
+            }
             LinkCommand::Shutdown => Ok(()),
         }
     }
@@ -286,6 +307,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
             p::PACKET_TYPE_BATTERY => self.on_battery(np).await,
             p::PACKET_TYPE_CONNECTIVITY_REPORT => self.on_connectivity(np).await,
             p::PACKET_TYPE_NOTIFICATION => self.on_notification(np).await,
+            p::PACKET_TYPE_NOTIFICATION_REQUEST => self.on_notification_request(np).await,
             p::PACKET_TYPE_IDENTITY => Ok(()),
             other => {
                 debug!("{}: ignoring unhandled packet {other}", self.peer.name);
@@ -474,30 +496,96 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
         Ok(())
     }
 
+    /// Parse a `kdeconnect.notification` packet.
+    ///
+    /// Both implementations put the notification key in `id` (not `key`) and
+    /// send `actions` as a JSON array of action titles. Android additionally
+    /// sends `time` as a decimal *string* and, for a repliable notification,
+    /// `requestReplyId`. The desktop sends neither `time` nor `requestReplyId`.
     async fn on_notification(&mut self, np: p::NetworkPacket) -> Result<()> {
-        let key = np.get_str("key").unwrap_or_default();
-        if key.is_empty() {
+        let id = np.get_str("id").unwrap_or_default();
+        if id.is_empty() {
+            debug!("{}: notification without an id, ignoring", self.peer.name);
             return Ok(());
         }
-        let mut actions = Vec::new();
-        for name in ["pause", "reply", "open", "cancel"] {
-            if np.body.has(name) {
-                actions.push(name.to_string());
-            }
-        }
+
+        let actions: Vec<String> = np
+            .body
+            .get_array("actions")
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        // Android writes `time` as a string; be tolerant and accept a number
+        // too, and fall back to now when the peer omits it entirely.
+        let timestamp = np
+            .body
+            .get_str("time")
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .or_else(|| np.body.get_i64("time"))
+            .unwrap_or_else(crate::config::now_millis);
+
         let notification = crate::types::RemoteNotification {
-            key: format!("{}:{}", self.peer.id, key),
+            id: id.clone(),
             title: np.get_str("title").unwrap_or_default(),
             text: np.get_str("text").unwrap_or_default(),
             app_name: np.get_str("appName").unwrap_or_default(),
-            timestamp: np
-                .body
-                .get_i64("t")
-                .unwrap_or_else(crate::config::now_millis),
+            timestamp,
             actions,
+            request_reply_id: np
+                .get_str("requestReplyId")
+                .filter(|s| !s.is_empty()),
             is_clearable: np.body.get_bool("isClearable").unwrap_or(true),
+            silent: np.body.get_bool("silent").unwrap_or(false),
+            group_name: np.get_str("groupName").filter(|s| !s.is_empty()),
         };
-        let _ = self.events.send(KcEvent::Notification(Box::new(notification)));
+
+        let repliable = notification.request_reply_id.is_some();
+        debug!(
+            "{}: notification from {} ({} action(s){})",
+            self.peer.name,
+            notification.app_name,
+            notification.actions.len(),
+            if repliable { ", repliable" } else { "" }
+        );
+
+        // Replace any earlier notification with the same id rather than
+        // accumulating duplicates.
+        self.notifications
+            .retain(|n: &crate::types::RemoteNotification| n.id != notification.id);
+        self.notifications.insert(0, notification.clone());
+        // Bound the list: a chatty app must not grow memory without limit.
+        const MAX_NOTIFICATIONS: usize = 100;
+        self.notifications.truncate(MAX_NOTIFICATIONS);
+
+        let _ = self.events.send(KcEvent::Notification {
+            device_id: self.peer.id.clone(),
+            device_name: self.peer.name.clone(),
+            notification: Box::new(notification),
+        });
+        Ok(())
+    }
+
+    /// `kdeconnect.notification.request` — the peer wants the notifications it
+    /// holds, typically after (re)connecting. Echo them straight back.
+    async fn on_notification_request(&mut self, _np: p::NetworkPacket) -> Result<()> {
+        if !self.trusted {
+            return Ok(());
+        }
+        for n in self.notifications.iter().rev() {
+            let mut out = p::NetworkPacket::new(p::PACKET_TYPE_NOTIFICATION);
+            out.set("id", n.id.clone());
+            out.set("appName", n.app_name.clone());
+            out.set("title", n.title.clone());
+            out.set("text", n.text.clone());
+            out.set("ticker", n.app_name.clone());
+            out.set("isClearable", n.is_clearable);
+            out.set("silent", n.silent);
+            // Android reads this field as a string, so send a string.
+            out.set("time", n.timestamp.to_string());
+            self.writer.write_packet(&out).await?;
+        }
         Ok(())
     }
 

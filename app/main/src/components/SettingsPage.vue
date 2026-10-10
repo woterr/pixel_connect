@@ -238,7 +238,16 @@ onMounted(load)
 							Share copied text between the phone and this computer.
 						</p>
 						<p v-if="store.clipboardCaps" class="mt-1 text-xs text-faint">
-							{{ store.clipboardCaps.note }}
+							{{ store.clipboardCaps.mechanismDetail }}
+						</p>
+						<p
+							v-if="store.clipboardCaps"
+							class="mt-1 text-xs"
+							:class="store.clipboardCaps.backgroundReadAllowed ? 'text-online' : 'text-warn'"
+						>
+							{{ store.clipboardCaps.backgroundReadAllowed
+								? 'Runs in the background — the window does not need to be focused'
+								: 'Needs focus — the window must be focused to read the clipboard' }}
 						</p>
 					</div>
 					<ToggleSwitch
@@ -494,7 +503,7 @@ onMounted(load)
 					</p>
 					<div class="mt-4 flex flex-wrap gap-2">
 						<span class="pc-chip">Linux native</span>
-						<span class="pc-chip">{{ store.clipboardCaps?.backend ?? 'Unknown' }}</span>
+						<span class="pc-chip">{{ store.clipboardCaps?.mechanismLabel ?? 'Unknown' }}</span>
 						<span class="pc-chip">KDE Connect v{{ store.info?.kdeconnectProtocol ?? 8 }}</span>
 					</div>
 					<dl class="mt-5 space-y-2 text-sm">

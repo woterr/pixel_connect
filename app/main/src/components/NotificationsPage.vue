@@ -6,12 +6,12 @@
 // card on top (wave progress plus pause/cancel affordances) and received-item
 // cards below that can be opened or saved.
 
-import { computed } from 'vue'
+import { computed, reactive, ref } from 'vue'
 
 import PcIcon from './atoms/PcIcon.vue'
 import ProgressWave from './atoms/ProgressWave.vue'
 import { useAppStore } from '../stores/app'
-import type { TransferProgress } from '../types'
+import type { RemoteNotification, TransferProgress } from '../types'
 import * as api from '../api'
 import { formatBytes, fileCategory, timeAgo, toPercent } from '../utils'
 
@@ -28,13 +28,42 @@ const received = computed(() =>
 const actionLabel = (a: string): string =>
 	({ pause: 'Pause', cancel: 'Cancel', open: 'Open', reply: 'Reply' })[a] ?? a
 
-async function runAction(key: string, action: string) {
-	const deviceId = key.split(':')[0]
+const busy = ref<string | null>(null)
+/** Draft reply text, keyed by notification id. */
+const replyDraft = reactive<Record<string, string>>({})
+
+/** Invoke an action the phone offered on this notification. */
+async function runAction(n: RemoteNotification, action: string) {
+	const deviceId = n.id.split(':')[0] ?? ''
+	if (!deviceId) return
+	busy.value = `${n.id}:${action}`
 	try {
-		await api.kdeSendNotificationAction(deviceId, key, action)
-		store.toast(`Sent "${actionLabel(action)}" to the phone`, 'success')
+		await api.kdeSendNotificationAction(deviceId, n.id, action)
+		store.toast(`Sent “${actionLabel(action)}” to the phone`, 'success')
+		if (action === 'cancel') {
+			store.notifications = store.notifications.filter((x) => x.id !== n.id)
+		}
 	} catch (e) {
 		store.toast(`Could not send the action: ${e}`, 'error')
+	} finally {
+		busy.value = null
+	}
+}
+
+/** Send a typed reply; the backend resolves the phone's own reply id. */
+async function sendReply(notificationId: string, text: string) {
+	const body = text.trim()
+	if (!body) return
+	busy.value = `${notificationId}:reply`
+	try {
+		await api.kdeReplyToNotification(notificationId, body)
+		store.toast('Reply sent to the phone', 'success')
+		delete replyDraft[notificationId]
+		store.notifications = store.notifications.filter((x) => x.id !== notificationId)
+	} catch (e) {
+		store.toast(`Could not send the reply: ${e}`, 'error')
+	} finally {
+		busy.value = null
 	}
 }
 
@@ -104,29 +133,65 @@ function cardIcon(name: string | null | undefined) {
 			</article>
 
 			<!-- phone notifications -->
-			<article
-				v-for="n in store.notifications"
-				:key="n.key"
-				class="pc-card mt-4 p-5"
-			>
+			<article v-for="n in store.notifications" :key="n.id" class="pc-card mt-4 p-5">
 				<div class="flex items-center gap-3">
 					<div class="pc-inset flex h-10 w-10 items-center justify-center rounded-full">
 						<PcIcon name="bell" :size="16" class="text-muted" />
 					</div>
 					<div class="min-w-0 flex-1">
-						<p class="truncate font-semibold">{{ n.title || n.appName }}</p>
+						<p class="truncate font-semibold">
+							{{ n.title || n.appName }}
+							<span v-if="n.silent" class="ml-1 text-faint">(silent)</span>
+						</p>
 						<p class="truncate text-sm text-muted">{{ n.text }}</p>
+						<p class="mt-0.5 truncate text-xs text-faint">
+							{{ n.appName }} · {{ store.deviceName(n.id.split(':')[0] ?? '', 'Phone') }} ·
+							{{ timeAgo(n.timestamp) }}
+						</p>
 					</div>
-					<span class="shrink-0 text-xs text-faint">{{ timeAgo(n.timestamp) }}</span>
 				</div>
-				<div v-if="n.actions.length" class="mt-4 flex flex-wrap gap-2">
+
+				<!-- typed reply: only when the phone marked it repliable -->
+				<form
+					v-if="n.requestReplyId"
+					class="mt-4 flex gap-2"
+					@submit.prevent="sendReply(n.id, replyDraft[n.id] ?? '')"
+				>
+					<input
+						v-model="replyDraft[n.id]"
+						type="text"
+						class="pc-inset flex-1 bg-transparent px-4 py-2 text-sm outline-none"
+						placeholder="Reply from this computer…"
+						:aria-label="`Reply to ${n.appName}`"
+						maxlength="4096"
+					/>
+					<button
+						type="submit"
+						class="pc-btn pc-btn-primary pc-btn-sm"
+						:disabled="!(replyDraft[n.id] ?? '').trim()"
+					>
+						<PcIcon name="send" :size="14" />
+						Send
+					</button>
+				</form>
+
+				<div v-if="n.actions.length || n.isClearable" class="mt-4 flex flex-wrap gap-2">
 					<button
 						v-for="a in n.actions"
 						:key="a"
 						class="pc-btn pc-btn-secondary pc-btn-sm"
-						@click="runAction(n.key, a)"
+						:disabled="busy === `${n.id}:${a}`"
+						@click="runAction(n, a)"
 					>
-						{{ actionLabel(a) }}
+						{{ a }}
+					</button>
+					<button
+						v-if="n.isClearable"
+						class="pc-btn pc-btn-ghost pc-btn-sm"
+						:disabled="busy === `${n.id}:cancel`"
+						@click="runAction(n, 'cancel')"
+					>
+						Dismiss
 					</button>
 				</div>
 			</article>

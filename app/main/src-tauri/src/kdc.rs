@@ -59,9 +59,6 @@ pub struct KdcState {
     pub notifications: Arc<Mutex<Vec<RemoteNotification>>>,
     pub connectivity: Arc<Mutex<Vec<ConnectivityState>>>,
     pub battery: Arc<Mutex<Vec<BatteryState>>>,
-    /// Content of the last clipboard text we applied locally, so we do not
-    /// bounce it straight back to the phone.
-    pub last_applied_clipboard: Arc<Mutex<String>>,
 }
 
 impl KdcState {
@@ -72,7 +69,6 @@ impl KdcState {
             notifications: Arc::new(Mutex::new(Vec::new())),
             connectivity: Arc::new(Mutex::new(Vec::new())),
             battery: Arc::new(Mutex::new(Vec::new())),
-            last_applied_clipboard: Arc::new(Mutex::new(String::new())),
         }
     }
 }
@@ -155,9 +151,10 @@ async fn handle_event(app: &AppHandle, state: &Arc<KdcState>, event: KcEvent) ->
             device_name,
             content,
         } => {
-            // Apply to the desktop clipboard.
+            // Apply to the desktop clipboard, and remember it so the resulting
+            // local change is not sent straight back to the phone.
+            crate::clipboard::remember_applied(&content);
             crate::clipboard::set_text(content.clone());
-            *state.last_applied_clipboard.lock().await = content;
             let _ = app.emit(
                 "kdeconnect:clipboard",
                 serde_json::json!({ "deviceId": device_id, "deviceName": device_name }),
@@ -168,9 +165,32 @@ async fn handle_event(app: &AppHandle, state: &Arc<KdcState>, event: KcEvent) ->
             state.shares.lock().await.push(pending.clone());
             let _ = app.emit("kdeconnect:share", pending);
         }
-        KcEvent::Notification(n) => {
-            state.notifications.lock().await.push((*n).clone());
-            let _ = app.emit("kdeconnect:notification", *n);
+        KcEvent::Notification {
+            device_id,
+            device_name,
+            notification,
+        } => {
+            // Namespace by device so the UI can tell identical ids from two
+            // phones apart and every reaction can find its own notification.
+            let mut n = *notification;
+            n.id = format!("{device_id}:{}", n.id);
+            let mut list = state.notifications.lock().await;
+            list.retain(|e| e.id != n.id);
+            list.insert(0, n.clone());
+            if list.len() > 100 {
+                list.truncate(100);
+            }
+            drop(list);
+            let _ = app.emit("kdeconnect:notification", n);
+            let _ = app.emit("kdeconnect:notification_from", device_name);
+        }
+        KcEvent::NotificationReplied {
+            device_id,
+            notification_id,
+        } => {
+            let qualified = format!("{device_id}:{notification_id}");
+            state.notifications.lock().await.retain(|e| e.id != qualified);
+            let _ = app.emit("kdeconnect:notification_replied", qualified);
         }
         KcEvent::Connectivity(c) => {
             let entry = ConnectivityState {
@@ -334,6 +354,8 @@ pub async fn clear_notifications(state: &KdcState) {
     state.notifications.lock().await.clear();
 }
 
+/// Invoke a notification action. `key` is the qualified `<deviceId>:<id>` key
+/// the UI holds.
 pub async fn notification_action(
     state: &KdcState,
     device_id: &str,
@@ -342,6 +364,31 @@ pub async fn notification_action(
 ) -> Result<()> {
     let svc = state.service.lock().await;
     svc.notification_action(device_id, key, action).await
+}
+
+/// Send a typed reply to a repliable notification.
+///
+/// Looks the notification up so the caller only has to supply the message; the
+/// `requestReplyId` the phone issued is taken from the stored notification,
+/// which is what the reply packet must echo.
+pub async fn notification_reply(
+    state: &KdcState,
+    device_id: &str,
+    notification_id: &str,
+    text: &str,
+) -> Result<()> {
+    let reply_id = {
+        let list = state.notifications.lock().await;
+        list.iter()
+            .find(|n| n.id == notification_id)
+            .and_then(|n| n.request_reply_id.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!("that notification is no longer available to reply to")
+            })?
+    };
+    let svc = state.service.lock().await;
+    svc.notification_reply(device_id, notification_id, &reply_id, text)
+        .await
 }
 
 pub async fn ping(state: &KdcState, device_id: &str, message: &str) -> Result<()> {

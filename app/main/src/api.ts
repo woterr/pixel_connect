@@ -109,6 +109,9 @@ export const kdeClearNotifications = () => invoke<void>('kde_clear_notifications
 export const kdeSendNotificationAction = (deviceId: string, key: string, action: string) =>
 	invoke<void>('kde_send_notification_action', { deviceId, key, action })
 
+export const kdeReplyToNotification = (notificationId: string, text: string) =>
+	invoke<void>('kde_reply_to_notification', { notificationId, text })
+
 export const kdeRequestClipboard = () => invoke<number>('kde_request_clipboard')
 
 export const kdeSetClipboardEnabled = (enabled: boolean) =>
@@ -174,6 +177,9 @@ export interface BackendEvents {
 	'kdeconnect:clipboard': { deviceId: string; deviceName: string }
 	'kdeconnect:share': PendingShare
 	'kdeconnect:notification': RemoteNotification
+	'kdeconnect:notification_from': string
+	'kdeconnect:notification_dismissed': string
+	'kdeconnect:notification_replied': string
 	'kdeconnect:connectivity': {
 		deviceId: string
 		wifiStrength: number | null

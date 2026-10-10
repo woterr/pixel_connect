@@ -90,13 +90,19 @@ export interface PendingShare {
 }
 
 export interface RemoteNotification {
-	key: string
+	/** `<deviceId>:<notificationId>`, so ids from two phones never collide. */
+	id: string
 	title: string
 	text: string
 	appName: string
 	timestamp: number
+	/** Action titles, in the order the phone offered them. */
 	actions: string[]
+	/** Present when the notification accepts a typed reply. */
+	requestReplyId?: string
 	isClearable: boolean
+	silent: boolean
+	groupName?: string
 }
 
 export interface TransferProgress {
@@ -181,11 +187,24 @@ export interface FileManagerStatus {
 	note: string
 }
 
+/** How the clipboard can be reached on this session. */
+export type ClipboardMechanism =
+	| 'waylandDataControl'
+	| 'x11'
+	| 'waylandX11Bridge'
+	| 'waylandCoreOnly'
+	| 'none'
+
 export interface ClipboardCapabilities {
-	backend: string
+	mechanism: ClipboardMechanism
+	mechanismLabel: string
+	mechanismDetail: string
 	wayland: boolean
 	x11: boolean
+	/** An unfocused process may read the clipboard. */
 	backgroundReadAllowed: boolean
+	/** An unfocused process may own the clipboard. */
+	backgroundWriteAllowed: boolean
 	note: string
 }
 

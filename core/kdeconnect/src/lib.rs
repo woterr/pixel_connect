@@ -268,15 +268,52 @@ impl KdeConnectService {
         self.command(device_id, LinkCommand::CancelPairing).await
     }
 
-    /// Push a phone notification action back to the device.
+    /// Invoke one of a notification's actions on the phone.
+    ///
+    /// `kdeconnect.notification.action` carries the notification `key` and the
+    /// action `action`; note the key is `action`, not `actionId`.
     pub async fn notification_action(&self, device_id: &str, key: &str, action: &str) -> Result<()> {
         let raw_key = key
             .strip_prefix(&format!("{device_id}:"))
-            .ok_or_else(|| anyhow::anyhow!("notification key does not belong to {device_id}"))?;
+            .unwrap_or(key);
         let mut np = NetworkPacket::new(packet::PACKET_TYPE_NOTIFICATION_ACTION);
         np.set("key", raw_key);
-        np.set("actionId", action);
+        np.set("action", action);
         self.command(device_id, LinkCommand::Send(Box::new(np))).await
+    }
+
+    /// Send a typed reply to a repliable notification.
+    ///
+    /// The phone supplies `requestReplyId` when a notification can be replied
+    /// to; that identifier, not the notification id, is what the reply packet
+    /// must echo back.
+    pub async fn notification_reply(
+        &self,
+        device_id: &str,
+        notification_id: &str,
+        reply_id: &str,
+        text: &str,
+    ) -> Result<()> {
+        if text.trim().is_empty() {
+            return Err(anyhow::anyhow!("the reply is empty"));
+        }
+        // Android caps a reply well below this; keep a generous but finite bound
+        // so a pathological client cannot buffer without limit.
+        if text.len() > 4096 {
+            return Err(anyhow::anyhow!(
+                "the reply is too long ({} bytes, limit 4096)",
+                text.len()
+            ));
+        }
+        self.command(
+            device_id,
+            LinkCommand::ReplyToNotification {
+                notification_id: notification_id.to_string(),
+                reply_id: reply_id.to_string(),
+                text: text.to_string(),
+            },
+        )
+        .await
     }
 }
 

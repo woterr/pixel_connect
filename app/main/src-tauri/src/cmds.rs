@@ -46,7 +46,7 @@ pub fn app_info(app: AppHandle, state: Shared<'_>) -> AppInfo {
         identifier: app.config().identifier.clone(),
         kdeconnect_protocol: pixel_connect_kdeconnect::PROTOCOL_VERSION,
         quickshare_service: true,
-        clipboard_backend: crate::clipboard::backend_label().to_string(),
+        clipboard_backend: crate::clipboard::ClipboardMechanism::detect().label().to_string(),
         filemanager_socket: crate::nautilus::socket_path()
             .to_string_lossy()
             .to_string(),
@@ -263,6 +263,22 @@ pub async fn kde_share_directory(
         return Err(format!("{} is not a directory", dir.display()));
     }
     crate::kdc::share_directory(kdc.inner(), &device_id, dir).await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kde_reply_to_notification(
+    kdc: Kdc<'_>,
+    notification_id: String,
+    text: String,
+) -> Result<(), String> {
+    // The key is `<deviceId>:<notificationId>`; the device is the prefix.
+    let device_id = notification_id
+        .split_once(':')
+        .map(|(d, _)| d.to_string())
+        .ok_or_else(|| "that notification key is malformed".to_string())?;
+    crate::kdc::notification_reply(kdc.inner(), &device_id, &notification_id, &text)
+        .await
         .map_err(|e| e.to_string())
 }
 

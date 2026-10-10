@@ -73,25 +73,47 @@ async function boot() {
 	}, 6000)
 	unlisteners.push(() => clearInterval(timer))
 
-	// On Wayland the compositor only lets a focused window read the clipboard,
-	// so poll while the window is alive and push any change to the phone.
+	// Clipboard -> phone.
+	//
+	// On most sessions the backend watcher already runs in the background and
+	// this is unnecessary. On a compositor with neither a data-control protocol
+	// nor an XWayland bridge, only a focused window may read the clipboard, so
+	// the front end drives detection: poll while focused, and catch up
+	// immediately whenever the window regains focus.
 	if (store.clipboardCaps && !store.clipboardCaps.backgroundReadAllowed) {
 		let lastSeen = ''
-		const clipTimer = setInterval(async () => {
+		const syncNow = async () => {
+			if (document.hasFocus()) return
 			try {
 				const text = await api.clipboardRead()
 				if (!text || text === lastSeen) return
 				lastSeen = text
-				if (!store.settings?.clipboardAutoShare) return
-				const target = store.preferredDevice
-				if (!target || target.linkState !== 'Connected') return
-				await api.kdeShareText(target.id, text)
-				store.toast(`Clipboard sent to ${target.name}`, 'success')
+				await pushClipboard(text)
 			} catch {
-				/* clipboard access can be denied; that is normal on Wayland */
+				/* clipboard access can be denied; that is the expected case here */
 			}
-		}, 1500)
-		unlisteners.push(() => clearInterval(clipTimer))
+		}
+		void syncNow()
+		const onFocus = () => void syncNow()
+		window.addEventListener('focus', onFocus)
+		const clipTimer = setInterval(syncNow, 1500)
+		unlisteners.push(() => {
+			window.removeEventListener('focus', onFocus)
+			clearInterval(clipTimer)
+		})
+	}
+}
+
+/** Forward locally-observed clipboard text to the paired phone. */
+async function pushClipboard(text: string) {
+	if (!store.settings?.clipboardAutoShare) return
+	const target = store.preferredDevice
+	if (!target || target.linkState !== 'Connected') return
+	try {
+		await api.kdeShareText(target.id, text)
+		store.toast(`Clipboard sent to ${target.name}`, 'success')
+	} catch (e) {
+		store.toast(`Could not send the clipboard: ${e}`, 'error')
 	}
 }
 

@@ -40,6 +40,10 @@ pub const PACKET_TYPE_SHARE_REQUEST_UPDATE: &str = "kdeconnect.share.request.upd
 pub const PACKET_TYPE_CONNECTIVITY_REPORT: &str = "kdeconnect.connectivity_report";
 pub const PACKET_TYPE_NOTIFICATION: &str = "kdeconnect.notification";
 pub const PACKET_TYPE_NOTIFICATION_ACTION: &str = "kdeconnect.notification.action";
+/// Sent by a peer that wants the notifications the other end holds.
+pub const PACKET_TYPE_NOTIFICATION_REQUEST: &str = "kdeconnect.notification.request";
+/// Typed reply to a repliable notification.
+pub const PACKET_TYPE_NOTIFICATION_REPLY: &str = "kdeconnect.notification.reply";
 
 /// Body of a KDE Connect packet. `serde_json::Value` is used rather than
 /// `QVariantMap`; it maps 1:1 onto the JSON object KDE Connect sends.
@@ -103,6 +107,11 @@ impl PacketBody {
             },
             _ => None,
         }
+    }
+
+    /// Iterate the body entries, for serialising or comparing a whole body.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.0.iter()
     }
 
     pub fn get_array(&self, key: &str) -> Option<Vec<String>> {
@@ -182,6 +191,11 @@ impl NetworkPacket {
 
     pub fn has(&self, key: &str) -> bool {
         self.body.has(key)
+    }
+
+    /// Whether a payload (for example an app icon) accompanies this packet.
+    pub fn has_payload(&self) -> bool {
+        self.payload_size.is_some_and(|n| n > 0)
     }
 
     /// Serialize to the wire format: compact JSON plus a single `\n`.
