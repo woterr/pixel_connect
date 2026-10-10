@@ -35,6 +35,15 @@ function featureLabel(f: string): string {
 	return FEATURE_LABELS[f] ?? f
 }
 
+/**
+ * The connection state, in the order someone acts on it.
+ *
+ * A connected device is never labelled "Not paired", whatever the trust store
+ * says: a link that is carrying traffic is connected, and claiming otherwise
+ * sends the user looking for a pairing button that is not the problem. Trust
+ * is reported separately, because the two genuinely differ — the phone may
+ * tolerate an unpaired link while this app has not been told to trust it.
+ */
 function stateLabel(d: KcDevice): string {
 	if (d.linkState === 'Connected') return `Connected over ${d.transport}`
 	if (d.linkState === 'Connecting') return 'Connecting…'
@@ -42,6 +51,19 @@ function stateLabel(d: KcDevice): string {
 	if (d.linkState === 'PairingRequestedByPeer') return 'Pairing requested by the phone'
 	if (d.trusted) return 'Paired, not connected'
 	return 'Not paired'
+}
+
+/**
+ * True when the link is up but the device is not in the trust store.
+ *
+ * Worth calling out separately, because it looks like a contradiction on
+ * screen: transfers work, yet the app does not consider the phone paired.
+ * That happens when the phone is paired with *another* KDE Connect
+ * implementation - each keeps its own trust store - so the phone accepts the
+ * connection while this app has nothing to pin a certificate against.
+ */
+function isUntrustedButConnected(d: KcDevice): boolean {
+	return d.linkState === 'Connected' && !d.trusted
 }
 
 /**
@@ -57,6 +79,10 @@ function headline(d: KcDevice): string {
 	if (d.batteryLevel !== null && d.batteryLevel !== undefined) {
 		parts.push(`${d.batteryLevel}%${d.batteryIsCharging ? ' ⚡' : ''}`)
 	}
+	// Say so, rather than leaving "Connected" to imply everything is fine.
+	// Transfers work because the phone tolerates the link, not because this app
+	// has pinned a certificate for it.
+	if (isUntrustedButConnected(d)) parts.push('not paired here')
 	if (!d.trusted) parts.unshift(deviceTypeLabel(d.type))
 	return parts.join(' · ')
 }

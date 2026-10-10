@@ -227,3 +227,13 @@ export function on<K extends keyof BackendEvents>(
 ): Promise<UnlistenFn> {
 	return listen<BackendEvents[K]>(event, (e) => handler(e.payload))
 }
+/**
+ * Point both protocols at one folder.
+ *
+ * Quick Share and KDE Connect each had their own download location, so setting
+ * one left the other writing somewhere the user had not chosen.
+ */
+export const setDownloadFolder = (path: string) =>
+	invoke<void>('set_download_folder', { path })
+
+export const getDownloadFolder = () => invoke<string | null>('get_download_folder')

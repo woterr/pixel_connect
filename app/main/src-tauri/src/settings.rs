@@ -26,9 +26,16 @@ pub struct Settings {
     pub visibility: u8,
     /// Optional fixed TCP port for the Quick Share service.
     pub port: Option<u32>,
-    /// Where Quick Share files are written.
+    /// The single folder both protocols download into.
+    ///
+    /// Quick Share and KDE Connect kept separate locations, so setting one
+    /// ignored the other and files arrived in a folder the user had not chosen.
+    /// `download_folder` is authoritative; `download_path` and `incoming_path`
+    /// are retained so an existing setting is not lost.
+    pub download_folder: Option<String>,
+    /// Where Quick Share files are written (superseded by `download_folder`).
     pub download_path: Option<String>,
-    /// Where KDE Connect shares are written.
+    /// Where KDE Connect shares are written (superseded by `download_folder`).
     pub incoming_path: Option<String>,
     /// `trace` | `debug` | `info` | `warn` | `error`
     pub debug_level: Option<String>,
@@ -68,6 +75,7 @@ impl Default for Settings {
             autostart: false,
             visibility: 0,
             port: None,
+            download_folder: None,
             download_path: None,
             incoming_path: None,
             debug_level: None,
@@ -120,6 +128,9 @@ pub fn load(app: &AppHandle) -> Settings {
             .map(|v| v as u8)
             .unwrap_or(d.visibility),
         port: s.get("port").and_then(|v| v.as_u64()).map(|v| v as u32),
+        download_folder: s
+            .get("download_folder")
+            .and_then(|v| v.as_str().map(|s| s.to_string())),
         download_path: s
             .get("download_path")
             .and_then(|v| v.as_str().map(|s| s.to_string())),
@@ -186,6 +197,7 @@ pub fn save(app: &AppHandle, settings: &Settings) -> anyhow::Result<()> {
     s.set("autostart", settings.autostart);
     s.set("visibility", settings.visibility);
     s.set("port", settings.port);
+    s.set("download_folder", settings.download_folder.clone());
     s.set("download_path", settings.download_path.clone());
     s.set("incoming_path", settings.incoming_path.clone());
     s.set("debug_level", settings.debug_level.clone());

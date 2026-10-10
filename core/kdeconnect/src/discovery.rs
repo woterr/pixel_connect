@@ -56,15 +56,57 @@ pub fn local_tcp_port() -> u16 {
     registry().lock().unwrap().local_port
 }
 
+/// Rank an interface for advertising.
+///
+/// Returns `None` for interfaces that cannot carry a peer connection, and a
+/// higher score for better ones. Exposed so the choice can be tested without a
+/// network, because getting it wrong is invisible until the user connects a
+/// phone by hotspot and nothing appears.
+pub fn score_interface(iface: &str, addr: Ipv4Addr, is_loopback: bool) -> Option<i32> {
+    if is_loopback {
+        return None;
+    }
+    // Point-to-point links (a hotspot client interface, a VPN) are the whole
+    // point of this feature, so they must not be filtered out. They simply do
+    // not get priority.
+    let p2p = iface.starts_with("tailscale") || iface.starts_with("wg") || iface.starts_with("ppp");
+
+    let base = if p2p { 10 } else { 50 };
+
+    // An RFC1918 address is what a phone hotspot and a home router both hand
+    // out, so it is a strong signal that this is the link the peer is on.
+    let private = addr.is_private() || addr.is_link_local();
+
+    Some(base + if private { 20 } else { 0 })
+}
+
 /// The local IPv4 address we advertise over mDNS.
-pub fn primary_local_ipv4() -> std::net::Ipv4Addr {
+///
+/// This must be the address on the interface the phone is actually reachable
+/// on. Returning "the first address the OS lists" is wrong whenever more than
+/// one interface is up, which is the normal case: with a VPN or a virtual
+/// machine active, that is frequently not the interface the phone is on, and
+/// the phone then dials an address it cannot route to.
+///
+/// Falls back to the old behaviour (any non-loopback IPv4) rather than
+/// returning loopback, so a machine with an unusual interface is still
+/// advertised rather than silently becoming invisible.
+pub fn primary_local_ipv4() -> Ipv4Addr {
     if let Ok(addrs) = get_if_addrs::get_if_addrs() {
+        let mut best: Option<(i32, Ipv4Addr)> = None;
         for a in addrs {
-            if !a.is_loopback() {
-                if let IpAddr::V4(v4) = a.ip() {
-                    return v4;
-                }
+            let IpAddr::V4(v4) = a.ip() else {
+                continue;
+            };
+            let Some(score) = score_interface(&a.name, v4, a.is_loopback()) else {
+                continue;
+            };
+            if best.is_none_or(|(b, _)| score > b) {
+                best = Some((score, v4));
             }
+        }
+        if let Some((_, addr)) = best {
+            return addr;
         }
     }
     Ipv4Addr::new(127, 0, 0, 1)
@@ -231,5 +273,54 @@ mod tests {
         np.set("tcpPort", 1716);
         note_udp_peer("10.0.0.5".parse().unwrap(), &np);
         assert!(snapshot().is_empty());
+    }
+
+    // ---- interface selection ------------------------------------------------
+    //
+    // Choosing the wrong interface to advertise is silent: the app starts, the
+    // port is bound on every interface, and the phone simply never appears.
+    // These tests pin the decision that the hotspot case depends on.
+
+    #[test]
+    fn loopback_is_never_advertised() {
+        assert_eq!(score_interface("lo", Ipv4Addr::new(127, 0, 0, 1), true), None);
+    }
+
+    /// The hotspot case: a phone hotspot hands out 192.168.x.x, which is also
+    /// what a home router does, so a private address must win.
+    #[test]
+    fn a_private_address_beats_a_public_one() {
+        let wifi = score_interface("wlo1", Ipv4Addr::new(192, 168, 43, 12), false).unwrap();
+        let public = score_interface("wlo1", Ipv4Addr::new(203, 0, 113, 7), false).unwrap();
+        assert!(wifi > public, "{wifi} should beat {public}");
+    }
+
+    /// With a VPN up, the tunnel's address must not be advertised, or the phone
+    /// is told to dial an address on a network it is not part of.
+    #[test]
+    fn a_vpn_is_never_preferred_over_a_real_network() {
+        let vpn = score_interface("tailscale0", Ipv4Addr::new(100, 114, 95, 4), false).unwrap();
+        let wifi = score_interface("wlo1", Ipv4Addr::new(192, 168, 1, 20), false).unwrap();
+        assert!(
+            vpn < wifi,
+            "a VPN interface must not outrank the local network"
+        );
+    }
+
+    /// A point-to-point interface is still usable - it is just not first choice.
+    #[test]
+    fn point_to_point_interfaces_remain_usable() {
+        let tun = score_interface("tailscale0", Ipv4Addr::new(100, 114, 95, 4), false);
+        assert!(tun.is_some(), "a VPN must not be excluded, only deprioritised");
+    }
+
+    #[test]
+    fn every_ordinary_interface_is_still_a_candidate() {
+        for iface in ["wlo1", "wlan0", "eth0", "enp3s0"] {
+            assert!(
+                score_interface(iface, Ipv4Addr::new(10, 0, 0, 5), false).is_some(),
+                "{iface} must remain advertisable"
+            );
+        }
     }
 }

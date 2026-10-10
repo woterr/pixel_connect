@@ -893,7 +893,14 @@ async fn mdns_loop(_ctx: Arc<LinkContext>, identity: Arc<DeviceInfo>) -> Result<
         MDNS_SERVICE_TYPE_FQDN,
         &device_info.id,
         &host_name,
-        crate::discovery::primary_local_ipv4().to_string(),
+        // Deliberately empty: `mdns-sd` only fills in addresses from the host
+        // when none were supplied *and* `addr_auto` is set (see
+        // `ServiceDaemon::register`). Naming a single address here is what
+        // broke phone-hotspot use: with a VPN or a second interface up, the
+        // chosen address is often not the one the phone can reach, so the
+        // phone was told to dial an address on a network it was not on and
+        // discovery silently never happened.
+        "",
         crate::discovery::local_tcp_port(),
         properties,
     )?

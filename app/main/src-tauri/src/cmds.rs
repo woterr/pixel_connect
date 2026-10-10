@@ -389,6 +389,49 @@ pub async fn kde_set_incoming_path(
     Ok(())
 }
 
+/// Point both backends at one folder.
+///
+/// Quick Share and KDE Connect used to keep separate download locations, so a
+/// user setting one saw the other silently ignore it and files arriving through
+/// the other protocol went somewhere else. One setting, applied to both.
+#[tauri::command]
+pub async fn set_download_folder(
+    app: AppHandle,
+    state: Shared<'_>,
+    kdc: Kdc<'_>,
+    path: String,
+) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    tokio::fs::create_dir_all(&path)
+        .await
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+
+    // Quick Share.
+    crate::quickshare::set_download_path(state.inner(), Some(path.clone()));
+
+    // KDE Connect.
+    let svc = kdc.inner().service.clone();
+    let guard = svc.lock().await;
+    guard.set_incoming_path(path.clone()).await;
+    drop(guard);
+
+    // The single stored value. Both legacy keys are written as well, so a
+    // downgrade does not resurrect the old, divergent folder.
+    let as_str = path.to_string_lossy().to_string();
+    crate::settings::set(&app, "download_folder", serde_json::json!(as_str.clone()));
+    crate::settings::set(&app, "download_path", serde_json::json!(as_str.clone()));
+    crate::settings::set(&app, "incoming_path", serde_json::json!(as_str));
+    Ok(())
+}
+
+/// The folder both backends currently download into.
+#[tauri::command]
+pub fn get_download_folder(app: AppHandle) -> Option<String> {
+    crate::settings::get_str(&app, "download_folder")
+        .or_else(|| crate::settings::get_str(&app, "download_path"))
+        .or_else(|| crate::settings::get_str(&app, "incoming_path"))
+}
+
 fn resolve_local_paths(paths: &[String]) -> Result<Vec<PathBuf>, String> {
     if paths.is_empty() {
         return Err("no files were selected".into());

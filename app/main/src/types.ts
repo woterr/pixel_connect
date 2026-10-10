@@ -69,6 +69,7 @@ export interface Settings {
 	visibility: number
 	port: number | null
 	downloadPath: string | null
+	downloadFolder: string | null
 	incomingPath: string | null
 	debugLevel: string | null
 	clipboardEnabled: boolean

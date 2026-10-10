@@ -112,6 +112,8 @@ async fn main() -> Result<(), anyhow::Error> {
             cmds::kde_pending_shares,
             cmds::kde_dismiss_share,
             cmds::kde_accept_share,
+            cmds::set_download_folder,
+            cmds::get_download_folder,
             cmds::kde_notifications,
             cmds::kde_clear_notifications,
             cmds::kde_request_clipboard,
@@ -267,7 +269,15 @@ async fn main() -> Result<(), anyhow::Error> {
                             .set_device_name(&settings_snapshot.kde_device_name)
                             .await;
                     }
-                    if let Some(incoming) = &settings_snapshot.incoming_path {
+                    // One folder for both protocols. The legacy keys are still honoured so an
+                    // existing setting keeps working, but `download_folder` wins
+                    // when present.
+                    let incoming = settings_snapshot
+                        .download_folder
+                        .clone()
+                        .or_else(|| settings_snapshot.incoming_path.clone())
+                        .or_else(|| settings_snapshot.download_path.clone());
+                    if let Some(incoming) = &incoming {
                         service
                             .set_incoming_path(std::path::PathBuf::from(incoming))
                             .await;
