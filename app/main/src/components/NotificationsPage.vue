@@ -67,6 +67,16 @@ async function sendReply(notificationId: string, text: string) {
 	}
 }
 
+/** Cancel an in-flight transfer. */
+async function cancel(t: TransferProgress) {
+	busy.value = `${t.id}:cancel`
+	try {
+		await store.cancelTransfer(t)
+	} finally {
+		busy.value = null
+	}
+}
+
 async function clearAll() {
 	await api.kdeClearNotifications()
 	store.notifications = []
@@ -121,14 +131,23 @@ function cardIcon(name: string | null | undefined) {
 					</span>
 				</div>
 
-				<div class="mt-5 flex gap-2">
-					<button class="pc-btn pc-btn-secondary pc-btn-sm" disabled>
-						Pause
+				<div class="mt-5 flex flex-wrap items-center gap-2">
+					<button
+						class="pc-btn pc-btn-secondary pc-btn-sm"
+						:disabled="busy === `${active.id}:cancel`"
+						@click="cancel(active)"
+					>
+						<PcIcon name="close" :size="14" />
+						Cancel transfer
 					</button>
-					<button class="pc-btn pc-btn-secondary pc-btn-sm" disabled>
-						Cancel
-					</button>
-					<span class="pc-chip self-center">Pause/Cancel arrive with the protocol extension</span>
+					<!--
+						The KDE Connect protocol has no pause packet: neither the
+						desktop nor the Android implementation defines one, so a
+						pause control could not do anything. Cancel works because
+						both implementations treat a closed payload socket as a
+						cancellation.
+					-->
+					<span class="pc-chip self-center">Pause is not part of the protocol</span>
 				</div>
 			</article>
 

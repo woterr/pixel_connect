@@ -13,6 +13,7 @@
 #[macro_use]
 extern crate log;
 
+pub mod cancel;
 pub mod config;
 pub mod crypto;
 pub mod deviceinfo;
@@ -33,6 +34,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::{broadcast, Mutex};
 
+pub use cancel::CancelToken;
 pub use config::KdeConnectConfig;
 pub use deviceinfo::{DeviceInfo, DeviceType};
 pub use lan::{KcEvent, LanLinkProvider, LinkCommand, RuntimeSettings};
@@ -250,6 +252,21 @@ impl KdeConnectService {
             LinkCommand::Send(Box::new(link::share_url_packet(url))),
         )
         .await
+    }
+
+    /// Cancel an in-flight transfer.
+    ///
+    /// The KDE Connect protocol has no cancel packet: both implementations
+    /// cancel by closing the payload connection. This drops it, which is the
+    /// same thing, and reports false when the transfer is already gone so the
+    /// UI never claims a cancellation that did not happen.
+    pub fn cancel_transfer(&self, transfer_id: &str) -> bool {
+        cancel::cancel(transfer_id)
+    }
+
+    /// Ids of everything currently transferring, for the UI to reconcile.
+    pub fn transfers_in_flight(&self) -> Vec<String> {
+        cancel::in_flight()
     }
 
     pub async fn ping(&self, device_id: &str, message: &str) -> Result<()> {

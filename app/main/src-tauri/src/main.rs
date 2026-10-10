@@ -94,6 +94,8 @@ async fn main() -> Result<(), anyhow::Error> {
             cmds::kde_devices,
             cmds::kde_device_info,
             cmds::kde_transports,
+            cmds::kde_cancel_transfer,
+            cmds::kde_transfers_in_flight,
             cmds::kde_refresh,
             cmds::kde_request_pairing,
             cmds::kde_accept_pairing,

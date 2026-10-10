@@ -20,3 +20,24 @@ pub fn temp_dir(tag: &str) -> PathBuf {
 pub async fn wait_for(d: std::time::Duration) {
     tokio::time::sleep(d).await;
 }
+
+/// Where a test's received files should land.
+///
+/// Each test gets its own directory. Without this, several tests would write
+/// into the real `~/Downloads` and find each other's files — an isolation bug
+/// that produced two confusing failures before it was found.
+pub fn downloads(tag: &str) -> PathBuf {
+    let dir = temp_dir(tag).join("incoming");
+    std::fs::create_dir_all(&dir).expect("could not create the download directory");
+    dir
+}
+
+/// Find the single file in `dir` with the given extension.
+#[allow(dead_code)]
+pub fn find_with_extension(dir: &std::path::Path, ext: &str) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == ext))
+}

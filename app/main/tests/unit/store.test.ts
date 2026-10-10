@@ -160,6 +160,7 @@ describe('device store', () => {
 			bytes: 10,
 			total: 100,
 			done: false,
+			cancelled: false,
 			error: null,
 		})
 		store.applyTransfer({
@@ -169,6 +170,7 @@ describe('device store', () => {
 			bytes: 90,
 			total: 100,
 			done: false,
+			cancelled: false,
 			error: null,
 		})
 		expect(store.transfers).toHaveLength(1)

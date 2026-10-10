@@ -124,6 +124,8 @@ export interface TransferProgress {
 	bytes: number
 	total: number
 	done: boolean
+	/** The user cancelled; distinct from a failure. */
+	cancelled: boolean
 	error: string | null
 }
 

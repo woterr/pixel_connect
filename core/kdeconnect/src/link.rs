@@ -718,6 +718,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
         let device_id = self.peer.id.clone();
         let tls = self.ctx.tls.clone();
 
+        let transfer_id = format!("{}:out:{}", device_id, filename);
+        let cancel = crate::cancel::register(&transfer_id);
+
         tokio::spawn(async move {
             let accepted = tokio::time::timeout(Duration::from_secs(30), listener.accept()).await;
             let Ok(Ok((socket, _))) = accepted else {
@@ -728,8 +731,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                     bytes: 0,
                     total,
                     done: true,
+                    cancelled: false,
                     error: Some("The phone did not open the file transfer connection".into()),
                 })));
+                crate::cancel::finish(&transfer_id);
                 return;
             };
             let _ = socket.set_nodelay(true);
@@ -748,6 +753,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                         bytes: 0,
                         total,
                         done: true,
+                        cancelled: false,
                         error: Some(format!("TLS handshake failed: {e}")),
                     })));
                     return;
@@ -769,6 +775,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                         return;
                     }
                 };
+                // Cancellation is signalled by dropping the payload socket,
+                // which is how both KDE Connect implementations cancel.
+                if cancel.is_cancelled() {
+                    info!("{filename}: cancelled after {sent}/{total} bytes");
+                    let _ = stream.shutdown().await;
+                    crate::cancel::finish(&transfer_id);
+                    let _ = events.send(KcEvent::TransferProgress(Box::new(TransferProgress {
+                        id: device_id.clone(),
+                        device_id: device_id.clone(),
+                        filename: filename.clone(),
+                        bytes: sent,
+                        total,
+                        done: true,
+                        cancelled: true,
+                        error: None,
+                    })));
+                    return;
+                }
                 if let Err(e) = stream.write_all(&buf[..n]).await {
                     emit_error(
                         &events, &device_id, &filename, sent, total, &e.to_string(),
@@ -784,6 +808,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                         bytes: sent,
                         total,
                         done: false,
+                        cancelled: false,
                         error: None,
                     })));
                     last_emit = std::time::Instant::now();
@@ -795,6 +820,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
             let _ = stream.flush().await;
             let _ = stream.shutdown().await;
             tokio::time::sleep(Duration::from_millis(300)).await;
+            crate::cancel::finish(&transfer_id);
             let _ = events.send(KcEvent::TransferProgress(Box::new(TransferProgress {
                 id: device_id.clone(),
                 device_id,
@@ -802,6 +828,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                 bytes: sent,
                 total,
                 done: true,
+                cancelled: false,
                 error: None,
             })));
         });
@@ -825,6 +852,7 @@ fn emit_error(
         bytes: sent,
         total,
         done: true,
+        cancelled: false,
         error: Some(error.to_string()),
     })));
 }
@@ -841,6 +869,9 @@ fn spawn_payload_receiver(
     total: u64,
     events: broadcast::Sender<KcEvent>,
 ) -> tokio::task::JoinHandle<()> {
+    let transfer_id = format!("{device_id}:in:{filename}");
+    let cancel = crate::cancel::register(&transfer_id);
+
     tokio::spawn(async move {
         let addr = SocketAddr::new(control_ip, port);
         let stream = match tokio::time::timeout(Duration::from_secs(20), TcpStream::connect(addr))
@@ -905,6 +936,23 @@ fn spawn_payload_receiver(
         let mut received: u64 = 0;
         let mut last_emit = std::time::Instant::now();
         loop {
+            if cancel.is_cancelled() {
+                info!("{filename}: download cancelled at {received}/{total} bytes");
+                drop(tls);
+                let _ = tokio::fs::remove_file(&tmp).await;
+                crate::cancel::finish(&transfer_id);
+                let _ = events.send(KcEvent::TransferProgress(Box::new(TransferProgress {
+                    id: device_id.clone(),
+                    device_id: device_id.clone(),
+                    filename: filename.clone(),
+                    bytes: received,
+                    total,
+                    done: true,
+                    cancelled: true,
+                    error: None,
+                })));
+                return;
+            }
             match tls.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
@@ -922,6 +970,7 @@ fn spawn_payload_receiver(
                             bytes: received,
                             total,
                             done: false,
+                            cancelled: false,
                             error: None,
                         })));
                         last_emit = std::time::Instant::now();
@@ -946,6 +995,7 @@ fn spawn_payload_receiver(
         }
 
         drop(file);
+        crate::cancel::finish(&transfer_id);
         if let Err(e) = std::fs::rename(&tmp, &dest) {
             emit_error(
                 &events,
@@ -967,6 +1017,7 @@ fn spawn_payload_receiver(
             bytes: received,
             total,
             done: true,
+            cancelled: false,
             error: None,
         })));
     })

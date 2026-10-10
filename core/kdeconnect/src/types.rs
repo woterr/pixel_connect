@@ -100,6 +100,10 @@ pub struct TransferProgress {
     pub bytes: u64,
     pub total: u64,
     pub done: bool,
+    /// True when the user cancelled, as opposed to the transfer failing.
+    /// The protocol has no cancel packet, so this reflects a locally dropped
+    /// payload connection rather than a message the peer sent.
+    pub cancelled: bool,
     pub error: Option<String>,
 }
 
@@ -129,14 +133,13 @@ pub struct RemoteNotification {
     pub actions: Vec<String>,
     /// Set when the notification supports a typed reply. The value is the
     /// identifier to echo back in `kdeconnect.notification.reply`.
-    #[serde(rename = "requestReplyId", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "requestReplyId")]
     pub request_reply_id: Option<String>,
     #[serde(rename = "isClearable")]
     pub is_clearable: bool,
     /// True when the peer marked the notification as silent/preexisting.
     pub silent: bool,
     /// Display name of the group, when the notification belongs to one.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub group_name: Option<String>,
 }
 

@@ -397,6 +397,29 @@ pub fn clipboard_write(text: String) {
     crate::clipboard::set_text_blocking(text);
 }
 
+/// Cancel an in-flight transfer. Errors when it had already finished, so the UI
+/// never claims a cancellation that did not happen.
+///
+/// Synchronous on purpose: cancelling is a registry flag, not an await, and a
+/// synchronous Tauri command cannot deadlock the async runtime.
+#[tauri::command]
+pub fn kde_cancel_transfer(kdc: Kdc<'_>, transfer_id: String) -> Result<bool, String> {
+    match kdc.inner().service.try_lock() {
+        Ok(svc) if svc.cancel_transfer(&transfer_id) => Ok(true),
+        Ok(_) => Err("that transfer has already finished".into()),
+        Err(_) => Err("the device backend is busy; try again".into()),
+    }
+}
+
+/// Ids of everything currently transferring.
+#[tauri::command]
+pub fn kde_transfers_in_flight(kdc: Kdc<'_>) -> Result<Vec<String>, String> {
+    match kdc.inner().service.try_lock() {
+        Ok(svc) => Ok(svc.transfers_in_flight()),
+        Err(_) => Err("the device backend is busy; try again".into()),
+    }
+}
+
 #[tauri::command]
 pub fn kde_transports() -> Vec<pixel_connect_kdeconnect::TransportStatus> {
     pixel_connect_kdeconnect::transport::registry()

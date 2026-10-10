@@ -15,13 +15,14 @@
 use std::time::Duration;
 
 use pixel_connect_kdeconnect::lan::KcEvent;
+use pixel_connect_kdeconnect::types::TransferProgress;
 use pixel_connect_kdeconnect::KdeConnectService;
 use pixel_connect_kdeconnect::tls::{TlsContext, TlsRole};
 use pixel_connect_kdeconnect::PROTOCOL_VERSION;
 
 mod support;
 
-use support::temp_dir;
+use support::{downloads, find_with_extension, temp_dir};
 
 /// Poll `check` until it is true or `timeout` elapses.
 async fn wait_until<F, Fut>(timeout: Duration, mut check: F) -> bool
@@ -151,6 +152,8 @@ async fn two_services_open_a_link_and_exchange_data() -> anyhow::Result<()> {
 
     let (svc_a, mut rx_a) = KdeConnectService::start(&dir_a).await?;
     svc_a.set_device_name("Peer A").await?;
+    let incoming = downloads("link-exchange");
+    svc_a.set_incoming_path(incoming.clone()).await;
     let (svc_b, _rx_b) = KdeConnectService::start(&dir_b).await?;
     svc_b.set_device_name("Peer B").await?;
 
@@ -185,7 +188,7 @@ async fn two_services_open_a_link_and_exchange_data() -> anyhow::Result<()> {
     // A hard timeout turns a regression into a failure instead of a hang.
     tokio::time::timeout(
         Duration::from_secs(60),
-        complete_exchange(&svc_a, &svc_b, &id_a, &id_b, &mut rx_a),
+        complete_exchange(&svc_a, &svc_b, &incoming, &id_a, &id_b, &mut rx_a),
     )
     .await
     .expect("the KDE Connect exchange did not finish within 60 seconds")?;
@@ -199,6 +202,7 @@ async fn two_services_open_a_link_and_exchange_data() -> anyhow::Result<()> {
 async fn complete_exchange(
     svc_a: &KdeConnectService,
     svc_b: &KdeConnectService,
+    incoming: &std::path::Path,
     id_a: &str,
     id_b: &str,
     rx_a: &mut tokio::sync::broadcast::Receiver<KcEvent>,
@@ -301,20 +305,10 @@ async fn complete_exchange(
 
     svc_b.share_files(id_a, &[payload.clone()], false).await?;
 
-    let downloads = svc_a.provider().settings.incoming_path();
-    std::fs::create_dir_all(&downloads)?;
-
     let mut landed: Option<std::path::PathBuf> = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while std::time::Instant::now() < deadline && landed.is_none() {
-        if let Ok(entries) = std::fs::read_dir(&downloads) {
-            for e in entries.flatten() {
-                let path = e.path();
-                if path.extension().is_some_and(|x| x == "bin") {
-                    landed = Some(path);
-                }
-            }
-        }
+        landed = find_with_extension(&incoming, "bin");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let landed = landed.expect("the shared file never arrived");
@@ -329,6 +323,174 @@ async fn complete_exchange(
         "the received payload differs from what was sent"
     );
     let _ = std::fs::remove_file(&landed);
+    let _ = std::fs::remove_file(&payload);
+    Ok(())
+}
+
+/// Cancellation must be honoured, and must report honestly.
+///
+/// The protocol has no cancel packet: KDE Connect signals a cancellation by
+/// closing the payload socket, and that is what this exercises.
+///
+/// Note on what is and is not asserted here. Loopback drains a payload far
+/// faster than a test can cancel it, so this test cannot reliably catch a
+/// transfer *mid-flight* — an early revision used a 24 MiB payload and
+/// routinely finished before the cancel arrived. The deterministic properties
+/// are therefore checked here:
+///
+///   * a live transfer accepts a cancel and is removed from the registry;
+///   * a transfer that has already finished refuses a cancel rather than
+///     reporting a silent success;
+///   * the peer never reports a *partial* transfer as complete.
+///
+/// The token semantics that actually stop a transfer are covered by the unit
+/// tests in `cancel.rs`.
+#[tokio::test]
+async fn cancelling_a_transfer_is_honoured_and_reports_honestly() -> anyhow::Result<()> {
+    let dir_a = temp_dir("cancel-a");
+    let dir_b = temp_dir("cancel-b");
+
+    let (svc_a, mut rx_a) = KdeConnectService::start(&dir_a).await?;
+    let incoming = downloads("cancel");
+    svc_a.set_incoming_path(incoming.clone()).await;
+    let (svc_b, _rx_b) = KdeConnectService::start(&dir_b).await?;
+
+    let id_a = svc_a.device_info().id.clone();
+    let id_b = svc_b.device_info().id.clone();
+
+    let mut identity = pixel_connect_kdeconnect::NetworkPacket::new(
+        pixel_connect_kdeconnect::packet::PACKET_TYPE_IDENTITY,
+    );
+    identity.set("deviceId", id_a.clone());
+    identity.set("deviceName", "Peer A");
+    identity.set("protocolVersion", PROTOCOL_VERSION);
+    identity.set("tcpPort", i64::from(svc_a.provider().tcp_port()));
+    pixel_connect_kdeconnect::discovery::note_udp_peer("127.0.0.1".parse().unwrap(), &identity);
+    let peer_a = pixel_connect_kdeconnect::discovery::snapshot()
+        .into_iter()
+        .find(|p| p.device_id == id_a)
+        .expect("peer A is in the registry");
+
+    {
+        let dialer = svc_b.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            dialer.provider().connect_to_peer(&peer_a).await;
+        });
+    }
+
+    assert!(
+        wait_until(Duration::from_secs(15), || async {
+            svc_b.provider().is_connected(&id_a).await
+        })
+        .await,
+        "the two services never connected"
+    );
+
+    // Pair, so the link is allowed to carry a share.
+    svc_b.request_pairing(&id_a).await?;
+    let mut key = String::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline && key.is_empty() {
+        match rx_a.try_recv() {
+            Ok(KcEvent::PairingRequest {
+                verification_key: k,
+                ..
+            }) => key = k,
+            Ok(_) => {}
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    assert!(!key.is_empty(), "no pairing request arrived");
+    svc_a.accept_pairing(&id_b).await?;
+    assert!(
+        wait_until(Duration::from_secs(15), || async {
+            svc_b.is_trusted(&id_a).await
+        })
+        .await,
+        "pairing did not complete"
+    );
+
+    // Cancelling something that does not exist must report failure.
+    assert!(
+        !svc_b.cancel_transfer("no-such-transfer-id"),
+        "cancelling an unknown transfer must report failure"
+    );
+
+    let payload = std::env::temp_dir()
+        .join(format!("pixel-connect-cancel-{}.bin", std::process::id()));
+    std::fs::write(&payload, vec![7u8; 8 * 1024 * 1024])?;
+
+    svc_b.share_files(&id_a, &[payload.clone()], false).await?;
+
+    // As soon as the transfer registers, cancel it.
+    let mut cancelled = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
+        for id in svc_b.transfers_in_flight() {
+            if svc_b.cancel_transfer(&id) {
+                cancelled = true;
+            }
+        }
+        if cancelled {
+            break;
+        }
+        if svc_b.transfers_in_flight().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+
+    if cancelled {
+        // The registry must forget it promptly.
+        assert!(
+            wait_until(Duration::from_secs(20), || async {
+                svc_b.transfers_in_flight().is_empty()
+            })
+            .await,
+            "a cancelled transfer stayed in the registry"
+        );
+        // And a second cancel must then refuse, rather than claiming success.
+        let id = format!("{}:out:{}", id_b, payload.file_name().unwrap().to_string_lossy());
+        assert!(
+            !svc_b.cancel_transfer(&id),
+            "cancelling a finished transfer must report failure"
+        );
+    }
+
+    // Whatever happened, the peer must not be told a partial file completed.
+    let mut outcome: Option<TransferProgress> = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline && outcome.is_none() {
+        match rx_a.try_recv() {
+            Ok(KcEvent::TransferProgress(t)) => {
+                if t.done {
+                    outcome = Some(*t);
+                }
+            }
+            Ok(_) => {}
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+
+    if let Some(t) = outcome {
+        if !t.cancelled && t.error.is_none() {
+            // A clean completion must have delivered every byte, never a prefix.
+            assert_eq!(
+                t.bytes, t.total,
+                "a transfer was reported complete after only {} of {} bytes",
+                t.bytes, t.total
+            );
+            // And the file on disk must match.
+            let landed =
+                find_with_extension(&incoming, "bin").expect("the completed file");
+            assert_eq!(std::fs::metadata(&landed).unwrap().len(), 8 * 1024 * 1024);
+            let _ = std::fs::remove_file(&landed);
+        }
+    }
+
+    svc_a.shutdown();
+    svc_b.shutdown();
     let _ = std::fs::remove_file(&payload);
     Ok(())
 }

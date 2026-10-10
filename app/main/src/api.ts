@@ -74,6 +74,11 @@ export const kdeDeviceInfo = () => invoke<DeviceInfo>('kde_device_info')
 
 export const kdeTransports = () => invoke<TransportStatus[]>('kde_transports')
 
+export const kdeCancelTransfer = (transferId: string) =>
+	invoke<boolean>('kde_cancel_transfer', { transferId })
+
+export const kdeTransfersInFlight = () => invoke<string[]>('kde_transfers_in_flight')
+
 export const kdeRefresh = () => invoke<void>('kde_refresh')
 
 export const kdeRequestPairing = (deviceId: string) =>

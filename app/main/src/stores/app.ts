@@ -175,6 +175,19 @@ export const useAppStore = defineStore('app', () => {
 		if (i === -1) transfers.value.push(t)
 		else transfers.value[i] = t
 		if (t.done && t.error) toast(`Transfer failed: ${t.error}`, 'error')
+		if (t.done && t.cancelled) toast(`Cancelled ${t.filename}`, 'info')
+	}
+
+	/** Cancel an in-flight transfer; reports honestly when it is already gone. */
+	async function cancelTransfer(transfer: TransferProgress): Promise<boolean> {
+		try {
+			await api.kdeCancelTransfer(transfer.id)
+			toast(`Cancelling ${transfer.filename}…`, 'info')
+			return true
+		} catch (e) {
+			toast(`Could not cancel: ${e}`, 'error')
+			return false
+		}
 	}
 
 	return {
@@ -220,5 +233,6 @@ export const useAppStore = defineStore('app', () => {
 		upsertDevice,
 		applyQuickShareEvent,
 		applyTransfer,
+		cancelTransfer,
 	}
 })
