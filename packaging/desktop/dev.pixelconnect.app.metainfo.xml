@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.pixelconnect.app</id>
+  <name>Pixel Connect</name>
+  <summary>Quick Share, clipboard and device integration for Google Pixel phones</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0</project_license>
+  <description>
+    <p>
+      Pixel Connect unifies Google Pixel connectivity on Linux. It provides
+      Google Quick Share, KDE Connect device integration (pairing, clipboard
+      synchronisation and file sharing) implemented in process, a "Send to
+      Pixel" entry for the Files context menu, ADB device detection and scrcpy
+      screen mirroring, and an optional SSH client integration.
+    </p>
+    <p>Everything works locally; no cloud service or account is required.</p>
+  </description>
+  <launchable type="desktop-id">dev.pixelconnect.app.desktop</launchable>
+  <provides>
+    <binary>pixel-connect</binary>
+  </provides>
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+  </categories>
+  <releases>
+    <release version="0.1.0" date="2026-10-10"/>
+  </releases>
+</component>

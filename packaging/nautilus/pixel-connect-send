@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only
+#
+# Pixel Connect — "Send to Pixel" command line helper.
+#
+# This is the backend-facing half of the file-manager integration. It is used by:
+#   * the Nautilus script entry (Nautilus passes selected files as arguments),
+#   * the Nautilus Python extension's fallback path,
+#   * the desktop keyboard shortcut, and
+#   * anyone who wants "Send to Pixel" from a keybinding or a launcher.
+#
+# It never constructs a shell command from a file name: paths are passed to the
+# backend as a JSON array over a Unix socket, and the backend re-validates that
+# every path exists and is local before using it.
+
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+
+SOCKET_PATH = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "pixel-connect", "filemanager.sock"
+)
+APP_ID = "dev.pixelconnect.app"
+
+
+def _fail(message, code=1):
+    print(f"Send to Pixel: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def _notify(message, urgency="normal"):
+    try:
+        subprocess.Popen(
+            ["notify-send", "-a", "Pixel Connect", "-u", urgency, message],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        print(message)
+
+
+def main(argv):
+    # Nautilus passes the selected files; GNOME's "Open With" passes file:// URIs.
+    paths = [a for a in argv if a and not a.startswith("-")]
+    if not paths:
+        _fail("no files were selected", 2)
+
+    if not os.path.exists(SOCKET_PATH):
+        # Try to start the application, then wait briefly for the socket.
+        try:
+            subprocess.Popen(
+                ["gtk-launch", APP_ID],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        import time
+
+        for _ in range(40):
+            if os.path.exists(SOCKET_PATH):
+                break
+            time.sleep(0.25)
+        if not os.path.exists(SOCKET_PATH):
+            _fail(
+                "Pixel Connect is not running. Start it and try again.\n"
+                f"(expected backend socket: {SOCKET_PATH})",
+                3,
+            )
+
+    request = json.dumps({"paths": paths, "deviceId": None, "reveal": True})
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(30)
+            sock.connect(SOCKET_PATH)
+            sock.sendall(request.encode("utf-8") + b"\n")
+            data = b""
+            while b"\n" not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+    except OSError as exc:
+        _fail(f"could not reach the Pixel Connect backend: {exc}", 4)
+
+    if not data.strip():
+        _fail("the Pixel Connect backend did not answer", 5)
+
+    try:
+        response = json.loads(data.decode("utf-8").splitlines()[0])
+    except ValueError:
+        _fail("the Pixel Connect backend sent a malformed reply", 6)
+
+    if not response.get("ok"):
+        _fail(response.get("error") or "the transfer could not be started", 7)
+
+    sent = response.get("sent", 0)
+    device = response.get("device")
+    noun = "item" if sent == 1 else "items"
+    _notify(f"Sent {sent} {noun}{f' to {device}' if device else ''}.", "low")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

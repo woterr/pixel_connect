@@ -1,0 +1,425 @@
+<script setup lang="ts">
+// Pixel Connect — Devices view.
+//
+// The unified device overview required by the V1 spec. Every field shown here
+// comes from the backend:
+//
+//   identity, available protocols, pairing state, connection state, features,
+//   transport, errors and recovery actions.
+//
+// Anything the backend has not implemented is shown as "unavailable" rather
+// than as a working control.
+
+import { computed, ref } from 'vue'
+
+import PcIcon from './atoms/PcIcon.vue'
+import { useAppStore } from '../stores/app'
+import * as api from '../api'
+import { deviceTypeLabel, timeAgo } from '../utils'
+import type { KcDevice } from '../types'
+
+const store = useAppStore()
+const busy = ref<string | null>(null)
+
+const FEATURE_LABELS: Record<string, string> = {
+	clipboard: 'Clipboard sync',
+	receiveFiles: 'Receive files',
+	shareFiles: 'Send files',
+	ping: 'Ping',
+	battery: 'Battery',
+	connectivity: 'Connectivity',
+	notifications: 'Notifications',
+}
+
+function featureLabel(f: string): string {
+	return FEATURE_LABELS[f] ?? f
+}
+
+function stateLabel(d: KcDevice): string {
+	if (d.linkState === 'Connected') return `Connected over ${d.transport}`
+	if (d.linkState === 'Connecting') return 'Connecting…'
+	if (d.linkState === 'PairingRequested') return 'Pairing requested'
+	if (d.linkState === 'PairingRequestedByPeer') return 'Pairing requested by the phone'
+	if (d.pairState === 'Paired') return 'Paired, not connected'
+	return 'Not paired'
+}
+
+function stateTone(d: KcDevice): string {
+	if (d.linkState === 'Connected') return 'bg-online'
+	if (d.linkState === 'Connecting') return 'bg-warn animate-pulse'
+	if (d.trusted) return 'bg-faint'
+	return 'bg-danger'
+}
+
+async function act(device: KcDevice, action: 'pair' | 'accept' | 'reject' | 'unpair' | 'ping' | 'mirroring') {
+	busy.value = `${device.id}:${action}`
+	try {
+		switch (action) {
+			case 'pair':
+				await api.kdeRequestPairing(device.id)
+				store.toast(`Pairing request sent to ${device.name}`)
+				break
+			case 'accept':
+				await api.kdeAcceptPairing(device.id)
+				store.toast(`${device.name} is now paired`, 'success')
+				break
+			case 'reject':
+				await api.kdeRejectPairing(device.id)
+				store.toast('Pairing rejected')
+				break
+			case 'unpair':
+				await api.kdeUnpair(device.id)
+				store.toast(`${device.name} unpaired`)
+				break
+			case 'ping':
+				await api.kdePing(device.id, 'Pixel Connect')
+				store.toast(`Ping sent to ${device.name}`, 'success')
+				break
+			case 'mirroring': {
+				if (device.linkState !== 'Connected') {
+					store.toast('The phone must be connected over the network to be mirrored.', 'error')
+					return
+				}
+				store.toast(
+					'Screen mirroring uses scrcpy over ADB. Pick the device under "Android over USB" below.',
+					'info',
+				)
+			}
+		}
+		store.refreshAll()
+	} catch (e) {
+		store.toast(`Action failed: ${e}`, 'error')
+	} finally {
+		busy.value = null
+	}
+}
+
+async function setPreferred(device: KcDevice) {
+	if (!store.settings) return
+	const next = { ...store.settings, preferredDeviceId: device.id }
+	try {
+		store.settings = await api.updateSettings(next)
+		store.toast(`${device.name} is now the default device`, 'success')
+	} catch (e) {
+		store.toast(`Could not save the preference: ${e}`, 'error')
+	}
+}
+
+// ---- ADB / scrcpy --------------------------------------------------------
+
+async function launchScrcpy(serial: string) {
+	busy.value = `adb:${serial}`
+	try {
+		const launch = await api.scrcpyLaunch(serial, [])
+		store.toast(`Started ${launch.command}`, 'success')
+		store.scrcpySessions = await api.scrcpyRunning()
+	} catch (e) {
+		store.toast(`Could not start scrcpy: ${e}`, 'error')
+	} finally {
+		busy.value = null
+	}
+}
+
+async function stopScrcpy(serial: string) {
+	await api.scrcpyStop(serial)
+	store.scrcpySessions = await api.scrcpyRunning()
+}
+
+async function refreshDevices() {
+	await api.kdeRefresh()
+	await store.refreshAll()
+	store.toast('Re-scanned the network', 'success')
+}
+
+const discovered = computed(() => store.devices)
+const adb = computed(() => store.adbDevices)
+</script>
+
+<template>
+	<div class="pc-scroll flex-1 px-6 pb-28 pt-6 sm:px-10 lg:px-14 lg:pb-12">
+		<header class="flex items-center justify-between">
+			<div>
+				<h2 class="pc-display text-4xl">Devices</h2>
+				<p class="mt-2 text-sm text-muted">
+					KDE Connect protocol v{{ store.info?.kdeconnectProtocol ?? 8 }} over the local network
+				</p>
+			</div>
+			<button class="pc-btn pc-btn-secondary pc-btn-md" @click="refreshDevices">
+				<PcIcon name="refresh" :size="16" />
+				Refresh
+			</button>
+		</header>
+
+		<!-- KDE Connect devices -->
+		<section class="mt-10">
+			<h3 class="pc-eyebrow mb-4">Network devices</h3>
+
+			<div v-if="discovered.length" class="space-y-4">
+				<article
+					v-for="device in discovered"
+					:key="device.id"
+					class="pc-card p-6"
+				>
+					<div class="flex flex-wrap items-start justify-between gap-4">
+						<div class="flex items-center gap-3">
+							<span class="pc-status-dot" :class="stateTone(device)" />
+							<div>
+								<h4 class="text-lg font-semibold">{{ device.name }}</h4>
+								<p class="text-sm text-muted">
+									{{ deviceTypeLabel(device.type) }} · {{ stateLabel(device) }}
+								</p>
+							</div>
+						</div>
+						<div class="flex flex-wrap gap-2">
+							<button
+								v-if="!device.trusted && device.linkState !== 'PairingRequestedByPeer'"
+								class="pc-btn pc-btn-primary pc-btn-sm"
+								:disabled="busy === `${device.id}:pair`"
+								@click="act(device, 'pair')"
+							>
+								Pair
+							</button>
+							<template v-if="device.linkState === 'PairingRequestedByPeer'">
+								<button
+									class="pc-btn pc-btn-primary pc-btn-sm"
+									:disabled="busy === `${device.id}:accept`"
+									@click="act(device, 'accept')"
+								>
+									Accept
+									<span v-if="device.verificationKey" class="ml-1 tabular-nums">
+										{{ device.verificationKey }}
+									</span>
+								</button>
+								<button
+									class="pc-btn pc-btn-secondary pc-btn-sm"
+									@click="act(device, 'reject')"
+								>
+									Reject
+								</button>
+							</template>
+							<button
+								v-if="device.trusted"
+								class="pc-btn pc-btn-secondary pc-btn-sm"
+								@click="act(device, 'ping')"
+							>
+								Ping
+							</button>
+							<button
+								v-if="device.trusted"
+								class="pc-btn pc-btn-ghost pc-btn-sm"
+								@click="act(device, 'unpair')"
+							>
+								Unpair
+							</button>
+						</div>
+					</div>
+
+					<!-- pairing verification key -->
+					<div
+						v-if="device.linkState === 'PairingRequestedByPeer' && device.verificationKey"
+						class="pc-inset mt-4 px-4 py-3 text-sm"
+					>
+						Confirm that the phone shows the same code:
+						<span class="ml-2 font-mono text-base font-bold tracking-widest">
+							{{ device.verificationKey }}
+						</span>
+					</div>
+
+					<!-- detail grid -->
+					<dl class="mt-5 grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2">
+						<div class="flex justify-between gap-4">
+							<dt class="text-muted">Transport</dt>
+							<dd class="text-right font-medium">{{ device.transport }}</dd>
+						</div>
+						<div class="flex justify-between gap-4">
+							<dt class="text-muted">Address</dt>
+							<dd class="truncate text-right font-medium">{{ device.address ?? '—' }}</dd>
+						</div>
+						<div class="flex justify-between gap-4">
+							<dt class="text-muted">Protocol</dt>
+							<dd class="text-right font-medium">v{{ device.protocolVersion }}</dd>
+						</div>
+						<div class="flex justify-between gap-4">
+							<dt class="text-muted">Last seen</dt>
+							<dd class="text-right font-medium">{{ timeAgo(device.lastSeen) }}</dd>
+						</div>
+						<div v-if="device.batteryLevel !== null" class="flex justify-between gap-4">
+							<dt class="text-muted">Battery</dt>
+							<dd class="text-right font-medium">
+								{{ device.batteryLevel }}%<span v-if="device.batteryIsCharging"> ⚡</span>
+							</dd>
+						</div>
+						<div class="flex justify-between gap-4">
+							<dt class="text-muted">Device id</dt>
+							<dd class="truncate text-right font-mono text-xs">{{ device.id }}</dd>
+						</div>
+					</dl>
+
+					<!-- features -->
+					<div class="mt-5">
+						<p class="pc-eyebrow mb-2">Available features</p>
+						<div v-if="device.features.length" class="flex flex-wrap gap-2">
+							<span v-for="f in device.features" :key="f" class="pc-chip">
+								{{ featureLabel(f) }}
+							</span>
+						</div>
+						<p v-else class="text-sm text-faint">
+							This device has not advertised any capabilities yet.
+						</p>
+					</div>
+
+					<!-- errors / recovery -->
+					<div
+						v-if="device.protocolError"
+						class="mt-5 flex items-start gap-3 rounded-xl bg-danger/10 px-4 py-3 text-sm text-danger"
+					>
+						<PcIcon name="alert" :size="16" class="mt-0.5" />
+						<div>
+							<p class="font-semibold">Connection problem</p>
+							<p class="mt-1">{{ device.protocolError }}</p>
+							<button
+								class="pc-btn pc-btn-secondary pc-btn-sm mt-3"
+								@click="refreshDevices"
+							>
+								Try again
+							</button>
+						</div>
+					</div>
+
+					<div class="mt-5 flex gap-2">
+						<button
+							class="pc-btn pc-btn-ghost pc-btn-sm"
+							@click="setPreferred(device)"
+						>
+							<PcIcon :name="store.settings?.preferredDeviceId === device.id ? 'check' : 'link'" :size="14" />
+							{{ store.settings?.preferredDeviceId === device.id
+								? 'Default device'
+								: 'Make default' }}
+						</button>
+						<button
+							class="pc-btn pc-btn-ghost pc-btn-sm"
+							:disabled="!device.features.includes('ping') && device.linkState !== 'Connected'"
+							@click="act(device, 'mirroring')"
+						>
+							<PcIcon name="monitor" :size="14" />
+							Mirror screen
+						</button>
+					</div>
+				</article>
+			</div>
+
+			<div v-else class="pc-card px-6 py-10 text-center">
+				<PcIcon name="wifi" :size="28" class="mx-auto text-faint" />
+				<p class="mt-3 font-semibold">No devices found yet</p>
+				<p class="mt-1 text-sm text-muted">
+					Pixel Connect is listening on the local network. Make sure the phone is on the
+					same Wi-Fi and has KDE Connect open, then refresh.
+				</p>
+				<button class="pc-btn pc-btn-secondary pc-btn-md mt-5" @click="refreshDevices">
+					<PcIcon name="refresh" :size="16" />
+					Scan again
+				</button>
+			</div>
+		</section>
+
+		<!-- ADB / scrcpy -->
+		<section class="mt-14">
+			<div class="flex items-center justify-between">
+				<h3 class="pc-eyebrow">Android over USB</h3>
+				<span class="text-xs text-faint">
+					{{ store.tools?.adbPath ? 'adb detected' : 'adb not found' }} ·
+					{{ store.tools?.scrcpyPath ? 'scrcpy detected' : 'scrcpy not found' }}
+				</span>
+			</div>
+
+			<div v-if="store.tools?.error" class="pc-card mt-4 px-6 py-5 text-sm">
+				<div class="flex items-start gap-3">
+					<PcIcon name="alert" :size="18" class="mt-0.5 text-warn" />
+					<div>
+						<p class="font-semibold">Missing dependencies</p>
+						<p class="mt-1 text-muted">{{ store.tools.error }}</p>
+						<code class="pc-inset mt-3 block px-3 py-2 text-xs">
+							sudo dnf install android-tools scrcpy
+						</code>
+					</div>
+				</div>
+			</div>
+
+			<div v-if="adb.length" class="mt-4 space-y-3">
+				<div
+					v-for="device in adb"
+					:key="device.serial"
+					class="pc-card flex flex-wrap items-center gap-4 px-5 py-4"
+				>
+					<PcIcon
+						:name="device.kind === 'wireless' ? 'wifi' : 'phone'"
+						:size="20"
+						class="text-muted"
+					/>
+					<div class="min-w-0 flex-1">
+						<p class="truncate font-semibold">{{ device.label }}</p>
+						<p class="text-sm text-muted">
+							{{ device.serial }} · adb state: {{ device.state }}
+						</p>
+					</div>
+					<button
+						v-if="device.scrcpyReady"
+						class="pc-btn pc-btn-primary pc-btn-sm"
+						:disabled="busy === `adb:${device.serial}`"
+						@click="launchScrcpy(device.serial)"
+					>
+						<PcIcon name="monitor" :size="14" />
+						Open in scrcpy
+					</button>
+					<button
+						v-else-if="store.scrcpySessions.includes(device.serial)"
+						class="pc-btn pc-btn-secondary pc-btn-sm"
+						@click="stopScrcpy(device.serial)"
+					>
+						Stop scrcpy
+					</button>
+					<p
+						v-else-if="device.scrcpyBlockReason"
+						class="max-w-sm text-right text-xs text-warn"
+					>
+						{{ device.scrcpyBlockReason }}
+					</p>
+				</div>
+			</div>
+
+			<p v-else-if="!store.tools?.error" class="mt-4 text-sm text-faint">
+				No ADB devices detected. Connect the phone over USB with USB debugging enabled, or
+				start a wireless session with <code>adb connect</code>.
+			</p>
+		</section>
+
+		<!-- transports not implemented -->
+		<section class="mt-14">
+			<h3 class="pc-eyebrow mb-4">Other transports</h3>
+			<div class="grid gap-4 sm:grid-cols-2">
+				<div class="pc-card px-6 py-5">
+					<div class="flex items-center gap-2">
+						<PcIcon name="bluetooth" :size="18" class="text-faint" />
+						<p class="font-semibold">Bluetooth</p>
+					</div>
+					<p class="mt-2 text-sm text-muted">
+						Experimental and not enabled in V1. KDE Connect's Bluetooth backend needs an
+						RFCOMM multiplexer on both sides and is disabled by default upstream. See
+						docs/architecture/v1-status.md.
+					</p>
+				</div>
+				<div class="pc-card px-6 py-5">
+					<div class="flex items-center gap-2">
+						<PcIcon name="wifiOff" :size="18" class="text-faint" />
+						<p class="font-semibold">Wi-Fi Direct</p>
+					</div>
+					<p class="mt-2 text-sm text-muted">
+						Not available in V1. KDE Connect has no Wi-Fi Direct support at all; a P2P
+						group would have to be created from scratch on both the Linux and Android side.
+						Feasibility notes are in docs/architecture/v1-status.md.
+					</p>
+				</div>
+			</div>
+		</section>
+	</div>
+</template>

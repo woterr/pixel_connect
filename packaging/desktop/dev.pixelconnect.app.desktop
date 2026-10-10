@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Pixel Connect
+GenericName=Pixel Connect
+Comment=Quick Share, clipboard sync and device integration for Google Pixel phones
+Exec=pixel-connect
+Icon=pixel-connect
+Terminal=false
+Categories=Network;FileTransfer;GTK;
+Keywords=Pixel;Quick Share;Nearby Share;KDE Connect;Clipboard;scrcpy;ADB;
+StartupNotify=true
+StartupWMClass=dev.pixelconnect.app
+X-GNOME-UsesNotifications=true

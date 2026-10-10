@@ -1,0 +1,23 @@
+# Build output
+target/
+dist/
+node_modules/
+.build/
+*.rpm
+*.AppImage
+*.deb
+
+# Generated TypeScript bindings are rebuilt by core/quickshare/build.rs
+core/quickshare/dist/
+core/quickshare/esm/
+
+# Local development
+.idea/
+.vscode/
+*.local
+.env
+
+# Signing material must never be committed
+*.jks
+*.keystore
+keystore.properties

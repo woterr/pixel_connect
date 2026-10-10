@@ -1,0 +1,344 @@
+/* Pixel Connect — design system.
+ *
+ * Recreated from the supplied Pixel Connect designs:
+ *   - AMOLED-black canvas, one warm off-white accent, one green "online" state
+ *   - Eyebrow labels in wide-tracked uppercase, section numbers (01, 02, 03)
+ *   - Heavy display type for the transfer headline, tight tracking
+ *   - Squircle-ish cards at 1.25rem, pill buttons at 2rem
+ *   - A signature wavy progress rule that fills left-to-right with the transfer
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+	:root {
+		color-scheme: dark;
+		--pc-bg: 10 10 10;
+		--pc-raised: 20 20 20;
+		--pc-card: 26 26 26;
+		--pc-card-alt: 33 33 33;
+		--pc-line: 42 42 42;
+		--pc-text: 244 244 244;
+		--pc-muted: 142 142 142;
+		--pc-faint: 95 95 95;
+		--pc-accent: 244 244 244;
+		--pc-on-accent: 10 10 10;
+		--pc-online: 61 220 132;
+		--pc-warn: 245 165 36;
+		--pc-danger: 244 84 76;
+		--pc-radius-card: 1.25rem;
+		--pc-radius-pill: 2rem;
+	}
+
+	html.light {
+		color-scheme: light;
+		--pc-bg: 246 246 246;
+		--pc-raised: 255 255 255;
+		--pc-card: 255 255 255;
+		--pc-card-alt: 240 240 240;
+		--pc-line: 224 224 224;
+		--pc-text: 16 16 16;
+		--pc-muted: 96 96 96;
+		--pc-faint: 150 150 150;
+		--pc-accent: 16 16 16;
+		--pc-on-accent: 255 255 255;
+		--pc-online: 22 145 88;
+		--pc-warn: 176 108 0;
+		--pc-danger: 199 42 34;
+	}
+
+	html,
+	body,
+	#app {
+		height: 100%;
+		margin: 0;
+	}
+
+	body {
+		background-color: rgb(var(--pc-bg));
+		color: rgb(var(--pc-text));
+		font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+		-webkit-font-smoothing: antialiased;
+		overflow: hidden;
+	}
+
+	/* Visible keyboard focus everywhere, matching GNOME expectations. */
+	:focus-visible {
+		outline: 2px solid rgb(var(--pc-text));
+		outline-offset: 2px;
+		border-radius: 0.5rem;
+	}
+
+	::selection {
+		background: rgb(var(--pc-text));
+		color: rgb(var(--pc-bg));
+	}
+}
+
+@layer components {
+	/* ---------------------------------------------------------- typography */
+
+	.pc-display {
+		font-weight: 800;
+		letter-spacing: -0.035em;
+		line-height: 0.95;
+	}
+
+	.pc-eyebrow {
+		font-size: 0.6875rem;
+		font-weight: 600;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: rgb(var(--pc-muted));
+	}
+
+	.pc-numeral {
+		font-size: 0.75rem;
+		font-weight: 700;
+		letter-spacing: 0.1em;
+		color: rgb(var(--pc-faint));
+		font-variant-numeric: tabular-nums;
+	}
+
+	.pc-section-title {
+		font-size: 1.5rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+	}
+
+	/* ------------------------------------------------------------ surfaces */
+
+	.pc-card {
+		background-color: rgb(var(--pc-card));
+		border-radius: var(--pc-radius-card);
+		transition: background-color 160ms cubic-bezier(0.2, 0, 0, 1),
+			transform 160ms cubic-bezier(0.2, 0, 0, 1);
+	}
+
+	.pc-card-interactive:hover {
+		background-color: rgb(var(--pc-card-alt));
+	}
+
+	.pc-card-interactive:active {
+		transform: scale(0.995);
+	}
+
+	.pc-inset {
+		background-color: rgb(var(--pc-card-alt));
+		border-radius: var(--pc-radius-card);
+	}
+
+	.pc-divider {
+		border-color: rgb(var(--pc-line));
+	}
+
+	/* ------------------------------------------------------------- buttons */
+
+	.pc-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		font-weight: 600;
+		border-radius: var(--pc-radius-pill);
+		transition: background-color 140ms cubic-bezier(0.2, 0, 0, 1),
+			color 140ms cubic-bezier(0.2, 0, 0, 1), opacity 140ms ease;
+		white-space: nowrap;
+	}
+
+	.pc-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.pc-btn-primary {
+		background-color: rgb(var(--pc-accent));
+		color: rgb(var(--pc-on-accent));
+	}
+
+	.pc-btn-primary:hover:not(:disabled) {
+		opacity: 0.88;
+	}
+
+	.pc-btn-secondary {
+		background-color: rgb(var(--pc-card-alt));
+		color: rgb(var(--pc-text));
+	}
+
+	.pc-btn-secondary:hover:not(:disabled) {
+		filter: brightness(1.12);
+	}
+
+	.pc-btn-ghost {
+		color: rgb(var(--pc-muted));
+	}
+
+	.pc-btn-ghost:hover:not(:disabled) {
+		color: rgb(var(--pc-text));
+		background-color: rgb(var(--pc-card-alt));
+	}
+
+	.pc-btn-sm {
+		padding: 0.375rem 0.875rem;
+		font-size: 0.8125rem;
+	}
+
+	.pc-btn-md {
+		padding: 0.625rem 1.25rem;
+		font-size: 0.9375rem;
+	}
+
+	.pc-btn-lg {
+		padding: 0.875rem 1.5rem;
+		font-size: 1rem;
+	}
+
+	/* --------------------------------------------------------------- nav */
+
+	.pc-nav-item {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		width: 100%;
+		padding: 0.625rem 1rem;
+		border-radius: 9999px;
+		font-size: 0.9375rem;
+		font-weight: 500;
+		color: rgb(var(--pc-muted));
+		transition: background-color 140ms cubic-bezier(0.2, 0, 0, 1),
+			color 140ms cubic-bezier(0.2, 0, 0, 1);
+	}
+
+	.pc-nav-item:hover {
+		color: rgb(var(--pc-text));
+	}
+
+	.pc-nav-item[aria-current='page'] {
+		background-color: rgb(var(--pc-accent));
+		color: rgb(var(--pc-on-accent));
+		font-weight: 600;
+	}
+
+	/* ------------------------------------------------------ wavy progress */
+
+	.pc-wave {
+		display: block;
+		width: 100%;
+		height: 26px;
+		overflow: visible;
+	}
+
+	.pc-wave__track {
+		stroke: rgb(var(--pc-line));
+		stroke-width: 2;
+		fill: none;
+		stroke-linecap: round;
+	}
+
+	.pc-wave__fill {
+		stroke: rgb(var(--pc-text));
+		stroke-width: 2.5;
+		fill: none;
+		stroke-linecap: round;
+		transition: stroke-dashoffset 400ms cubic-bezier(0.2, 0, 0, 1);
+	}
+
+	/* ------------------------------------------------------------- switch */
+
+	.pc-switch {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		width: 2.75rem;
+		height: 1.5rem;
+		border-radius: 9999px;
+		background-color: rgb(var(--pc-card-alt));
+		transition: background-color 160ms cubic-bezier(0.2, 0, 0, 1);
+		flex: none;
+	}
+
+	.pc-switch[aria-checked='true'] {
+		background-color: rgb(var(--pc-accent));
+	}
+
+	.pc-switch__thumb {
+		position: absolute;
+		left: 0.1875rem;
+		width: 1.125rem;
+		height: 1.125rem;
+		border-radius: 9999px;
+		background-color: rgb(var(--pc-muted));
+		transition: transform 180ms cubic-bezier(0.2, 0, 0, 1),
+			background-color 180ms cubic-bezier(0.2, 0, 0, 1);
+	}
+
+	.pc-switch[aria-checked='true'] .pc-switch__thumb {
+		transform: translateX(1.25rem);
+		background-color: rgb(var(--pc-on-accent));
+	}
+
+	/* -------------------------------------------------------------- pills */
+
+	.pc-status-dot {
+		width: 0.5rem;
+		height: 0.5rem;
+		border-radius: 9999px;
+		flex: none;
+	}
+
+	.pc-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.375rem;
+		padding: 0.125rem 0.625rem;
+		border-radius: 9999px;
+		border: 1px solid rgb(var(--pc-line));
+		font-size: 0.6875rem;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		color: rgb(var(--pc-muted));
+	}
+
+	/* ------------------------------------------------------------ dropzone */
+
+	.pc-dropzone {
+		border: 2px dashed rgb(var(--pc-line));
+		border-radius: var(--pc-radius-card);
+		transition: border-color 160ms ease, background-color 160ms ease;
+	}
+
+	.pc-dropzone[data-active='true'] {
+		border-color: rgb(var(--pc-text));
+		background-color: rgb(var(--pc-card-alt));
+	}
+
+	/* ------------------------------------------------------------ scrollbar */
+
+	.pc-scroll {
+		overflow-y: auto;
+		scrollbar-width: thin;
+		scrollbar-color: rgb(var(--pc-line)) transparent;
+	}
+
+	.pc-scroll::-webkit-scrollbar {
+		width: 10px;
+	}
+
+	.pc-scroll::-webkit-scrollbar-thumb {
+		background-color: rgb(var(--pc-line));
+		border-radius: 9999px;
+		border: 3px solid transparent;
+		background-clip: content-box;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.001ms !important;
+		transition-duration: 0.001ms !important;
+	}
+}

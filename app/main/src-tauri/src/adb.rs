@@ -1,0 +1,482 @@
+// Pixel Connect — ADB device discovery and scrcpy integration.
+//
+// Pixel Connect does not talk to the phone over ADB itself; it *manages* the
+// ADB and scrcpy tools that ship separately (scrcpy is available in the Fedora
+// repositories as `scrcpy` + `android-tools`). This module:
+//
+//   * detects whether `adb` and `scrcpy` are on PATH
+//   * enumerates connected devices (USB and pre-authorised wireless)
+//   * launches scrcpy for a chosen device and tracks the child process
+//
+// Nothing here enables developer options, accepts a debug prompt, or weakens
+// ADB authentication: it only reads `adb devices -l` and starts scrcpy with an
+// explicit, validated serial.
+
+use std::collections::HashMap;
+use std::process::Stdio;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionKind {
+    Usb,
+    Wireless,
+    Emulator,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdbDevice {
+    pub serial: String,
+    pub state: String,
+    pub kind: ConnectionKind,
+    pub model: Option<String>,
+    pub product: Option<String>,
+    pub device: Option<String>,
+    pub transport_id: Option<String>,
+    /// Human label, e.g. "Pixel 8 Pro" or "192.168.1.42:5555".
+    pub label: String,
+    /// Can scrcpy actually run against this device?
+    pub scrcpy_ready: bool,
+    pub scrcpy_block_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAvailability {
+    pub adb_path: Option<String>,
+    pub scrcpy_path: Option<String>,
+    pub adb_version: Option<String>,
+    pub scrcpy_version: Option<String>,
+    pub error: Option<String>,
+}
+
+pub struct Tools {
+    pub adb: Option<String>,
+    pub scrcpy: Option<String>,
+    pub adb_version: Option<String>,
+    pub scrcpy_version: Option<String>,
+    pub error: Option<String>,
+}
+
+pub struct AdbState {
+    pub tools: Arc<Mutex<Tools>>,
+    pub running: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
+}
+
+impl Default for AdbState {
+    fn default() -> Self {
+        Self {
+            tools: Arc::new(Mutex::new(Tools {
+                adb: None,
+                scrcpy: None,
+                adb_version: None,
+                scrcpy_version: None,
+                error: None,
+            })),
+            running: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+fn which(bin: &str) -> Option<String> {
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(':') {
+            let candidate = std::path::Path::new(dir).join(bin);
+            if candidate.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = candidate.metadata() {
+                        if meta.permissions().mode() & 0o111 == 0 {
+                            continue;
+                        }
+                    }
+                }
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+pub async fn detect(state: &AdbState) -> ToolAvailability {
+    let adb = which("adb");
+    let scrcpy = which("scrcpy");
+    let adb_version = match &adb {
+        Some(bin) => run_capture(bin, &["version"]).await,
+        None => None,
+    };
+    let scrcpy_version = match &scrcpy {
+        Some(bin) => run_capture(bin, &["--version"]).await,
+        None => None,
+    };
+    let error = if adb.is_none() && scrcpy.is_none() {
+        Some(
+            "Neither adb nor scrcpy was found on PATH. Install the Fedora packages \
+             'android-tools' and 'scrcpy', then reopen Pixel Connect."
+                .to_string(),
+        )
+    } else if adb.is_none() {
+        Some("adb was not found on PATH. Install the Fedora package 'android-tools'.".to_string())
+    } else if scrcpy.is_none() {
+        Some("scrcpy was not found on PATH. Install the Fedora package 'scrcpy'.".to_string())
+    } else {
+        None
+    };
+
+    let availability = ToolAvailability {
+        adb_path: adb.clone(),
+        scrcpy_path: scrcpy.clone(),
+        adb_version: adb_version.clone(),
+        scrcpy_version: scrcpy_version.clone(),
+        error: error.clone(),
+    };
+    *state.tools.lock().await = Tools {
+        adb,
+        scrcpy,
+        adb_version,
+        scrcpy_version,
+        error,
+    };
+    availability
+}
+
+async fn run_capture(bin: &str, args: &[&str]) -> Option<String> {
+    let out = Command::new(bin)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · "),
+    )
+}
+
+/// Parse the output of `adb devices -l`.
+pub fn parse_devices(output: &str, scrcpy_available: bool) -> Vec<AdbDevice> {
+    output
+        .lines()
+        // Skip everything up to and including the "List of devices attached"
+        // header, plus any "* daemon ..." chatter that precedes it.
+        .skip_while(|l| !l.trim_start().starts_with("List of devices"))
+        .skip(1)
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('*') {
+                return None;
+            }
+            let mut parts = line.split_whitespace();
+            let serial = parts.next()?.to_string();
+            let state = parts.next()?.to_string();
+
+            let mut attrs = HashMap::new();
+            for p in parts {
+                if let Some((k, v)) = p.split_once(':') {
+                    attrs.insert(k.to_string(), v.to_string());
+                }
+            }
+
+            let kind = if serial.starts_with("emulator-") {
+                ConnectionKind::Emulator
+            } else if serial.contains(':') {
+                ConnectionKind::Wireless
+            } else {
+                ConnectionKind::Usb
+            };
+
+            let model = attrs.get("model").map(|m| {
+                m.replace('_', " ")
+            });
+            let label = match (&model, kind) {
+                (Some(m), ConnectionKind::Wireless) => format!("{m} (wireless)"),
+                (Some(m), ConnectionKind::Emulator) => format!("{m} (emulator)"),
+                (Some(m), _) => m.clone(),
+                (None, ConnectionKind::Wireless) => format!("{serial} (wireless)"),
+                (None, _) => serial.clone(),
+            };
+
+            let (scrcpy_ready, scrcpy_block_reason) = if !scrcpy_available {
+                (
+                    false,
+                    Some("scrcpy is not installed on this system".to_string()),
+                )
+            } else if state != "device" {
+                (
+                    false,
+                    Some(match state.as_str() {
+                        "unauthorized" => "The phone has not accepted this computer for debugging. Unlock it and confirm the USB debugging prompt.".to_string(),
+                        "offline" => "The device is offline. Reconnect the cable, or toggle USB debugging off and on.".to_string(),
+                        "connecting" => "The device is still connecting.".to_string(),
+                        "no" => format!("adb reports: {}", state),
+                        other => format!("adb reports: {other}"),
+                    }),
+                )
+            } else {
+                (true, None)
+            };
+
+            Some(AdbDevice {
+                serial,
+                state,
+                kind,
+                model,
+                product: attrs.get("product").cloned(),
+                device: attrs.get("device").cloned(),
+                transport_id: attrs.get("transport_id").cloned(),
+                label,
+                scrcpy_ready,
+                scrcpy_block_reason,
+            })
+        })
+        .collect()
+}
+
+pub async fn list_devices(state: &AdbState) -> Result<Vec<AdbDevice>, String> {
+    let adb = {
+        let tools = state.tools.lock().await;
+        tools.adb.clone()
+    };
+    let Some(adb) = adb else {
+        let _ = detect(state).await;
+        let tools = state.tools.lock().await;
+        let err = tools
+            .error
+            .clone()
+            .unwrap_or_else(|| "adb is not available".to_string());
+        return Err(err);
+    };
+
+    let out = Command::new(&adb)
+        .args(["devices", "-l"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|e| format!("could not run adb: {e}"))?;
+
+    if !out.status.success() {
+        return Err(format!(
+            "adb devices failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    let scrcpy_available = state.tools.lock().await.scrcpy.is_some();
+    Ok(parse_devices(
+        &String::from_utf8_lossy(&out.stdout),
+        scrcpy_available,
+    ))
+}
+
+/// Validate a serial before it is handed to a process. ADB serials are
+/// `host:port` or a short alphanumeric token; anything else is rejected so a
+/// crafted device name can never become an argument.
+fn valid_serial(serial: &str) -> bool {
+    !serial.is_empty()
+        && serial.len() <= 128
+        && serial
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrcpyLaunch {
+    pub serial: String,
+    pub args: Vec<String>,
+    pub command: String,
+}
+
+/// Launch scrcpy for `serial`. Returns the command that was started so the UI
+/// can show exactly what will run.
+pub async fn launch_scrcpy(
+    state: &AdbState,
+    serial: &str,
+    extra_args: &[String],
+) -> Result<ScrcpyLaunch, String> {
+    if !valid_serial(serial) {
+        return Err(format!("invalid device serial: {serial:?}"));
+    }
+    let scrcpy = {
+        let tools = state.tools.lock().await;
+        tools.scrcpy.clone()
+    };
+    let Some(scrcpy) = scrcpy else {
+        let _ = detect(state).await;
+        return Err("scrcpy is not installed on this system".to_string());
+    };
+
+    for a in extra_args {
+        if a.starts_with('-') && !a.chars().skip(1).all(|c| c.is_ascii_alphanumeric() || matches!(c, '=' | '-' | '_' | '.')) {
+            return Err(format!("unsafe scrcpy argument: {a:?}"));
+        }
+    }
+
+    let mut args: Vec<String> = vec!["--serial".into(), serial.to_string()];
+    args.extend(extra_args.iter().cloned());
+
+    let mut cmd = Command::new(&scrcpy);
+    cmd.args(args.clone())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(false);
+    // scrcpy is a GUI app: detach it from our terminal but keep the handle so
+    // we can stop it again.
+    cmd.process_group(0);
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("could not start scrcpy: {e}"))?;
+
+    let child = Arc::new(Mutex::new(child));
+    state
+        .running
+        .lock()
+        .await
+        .insert(serial.to_string(), child);
+
+    let command = format!("scrcpy {}", args.join(" "));
+    Ok(ScrcpyLaunch {
+        serial: serial.to_string(),
+        args,
+        command,
+    })
+}
+
+/// Stop a scrcpy session previously started by Pixel Connect.
+pub async fn stop_scrcpy(state: &AdbState, serial: &str) -> Result<bool, String> {
+    let child = state.running.lock().await.remove(serial);
+    let Some(child) = child else {
+        return Ok(false);
+    };
+    let mut guard = child.lock().await;
+    match guard.start_kill() {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => Ok(false),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+pub async fn running(state: &AdbState) -> Vec<String> {
+    let mut list: Vec<String> = state.running.lock().await.keys().cloned().collect();
+    list.sort();
+    list
+}
+
+/// Reap finished scrcpy processes so the "running" list stays accurate.
+pub async fn prune(state: &AdbState) {
+    let mut running = state.running.lock().await;
+    let mut finished = Vec::new();
+    for (serial, child) in running.iter() {
+        let mut guard = child.lock().await;
+        match guard.try_wait() {
+            Ok(Some(_)) => finished.push(serial.clone()),
+            _ => {}
+        }
+    }
+    for serial in finished {
+        running.remove(&serial);
+    }
+}
+
+pub async fn stop_all(state: &AdbState) {
+    let serials: Vec<String> = state.running.lock().await.keys().cloned().collect();
+    for s in serials {
+        let _ = stop_scrcpy(state, &s).await;
+    }
+}
+
+/// Synchronous variant for the shutdown path, where blocking the caller is
+/// acceptable and spawning a nested runtime is not.
+pub fn stop_all_blocking(state: &AdbState) {
+    let Ok(mut running) = state.running.try_lock() else {
+        return;
+    };
+    for (serial, child) in running.drain() {
+        if let Ok(mut guard) = child.try_lock() {
+            let _ = guard.start_kill();
+        }
+        log::info!("stopped scrcpy for {serial}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = "List of devices attached\n\
+emulator-5554          device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64x transport_id:1\n\
+R5CT30XXXXX            device usb:1-4 product:raven model:Pixel_8_Pro device:raven transport_id:2\n\
+192.168.1.42:5555      device product:raven model:Pixel_8 device:raven transport_id:3\n\
+DEADBEEF               unauthorized usb:1-7\n";
+
+    #[test]
+    fn parses_usb_wireless_and_unauthorized_devices() {
+        let devices = parse_devices(SAMPLE, true);
+        assert_eq!(devices.len(), 4);
+
+        let usb = &devices[1];
+        assert_eq!(usb.serial, "R5CT30XXXXX");
+        assert_eq!(usb.kind, ConnectionKind::Usb);
+        assert_eq!(usb.model.as_deref(), Some("Pixel 8 Pro"));
+        assert!(usb.scrcpy_ready);
+
+        let wifi = &devices[2];
+        assert_eq!(wifi.kind, ConnectionKind::Wireless);
+        assert!(wifi.label.contains("wireless"));
+
+        let bad = &devices[3];
+        assert_eq!(bad.state, "unauthorized");
+        assert!(!bad.scrcpy_ready);
+        assert!(bad
+            .scrcpy_block_reason
+            .as_ref()
+            .unwrap()
+            .contains("USB debugging"));
+
+        let emu = &devices[0];
+        assert_eq!(emu.kind, ConnectionKind::Emulator);
+    }
+
+    #[test]
+    fn missing_scrcpy_is_reported_per_device() {
+        let devices = parse_devices(SAMPLE, false);
+        assert!(devices.iter().all(|d| !d.scrcpy_ready));
+        assert!(devices[1].scrcpy_block_reason.as_ref().unwrap().contains("scrcpy"));
+    }
+
+    #[test]
+    fn serials_that_could_be_argument_injection_are_rejected() {
+        assert!(valid_serial("R5CT30XXXXX"));
+        assert!(valid_serial("192.168.1.42:5555"));
+        assert!(!valid_serial(""));
+        assert!(!valid_serial("abc;rm -rf /"));
+        assert!(!valid_serial("abc$(whoami)"));
+        assert!(!valid_serial("a b"));
+        assert!(!valid_serial(&"x".repeat(200)));
+    }
+
+    #[test]
+    fn parsing_tolerates_daemon_noise_and_blank_lines() {
+        let output = "* daemon not running; starting now at tcp:5037\n* daemon started successfully\nList of devices attached\n\n";
+        assert!(parse_devices(output, true).is_empty());
+    }
+}

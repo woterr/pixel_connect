@@ -1,0 +1,23 @@
+{
+	"name": "@pixelconnect/quickshare",
+	"version": "0.11.5",
+	"description": "TypeScript models shared with the Pixel Connect Vue application (derived from @martichou/core_lib)",
+	"main": "dist/index.js",
+	"module": "esm/index.js",
+	"types": "dist/index.d.ts",
+	"files": [
+		"dist",
+		"bindings",
+		"esm"
+	],
+	"scripts": {
+		"build:cjs": "tsc --module commonjs --outDir dist",
+		"build:esm": "tsc --target es2018 --outDir esm",
+		"build": "npm run build:esm && npm run build:cjs"
+	},
+	"author": "Martin ANDRE (original) / Pixel Connect contributors",
+	"license": "AGPL-3.0",
+	"devDependencies": {
+		"typescript": "^5.0.4"
+	}
+}

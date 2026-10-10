@@ -1,0 +1,78 @@
+# Pixel Connect — KDE Connect protocol implementation (Rust)
+#
+# This crate implements the KDE Connect *protocol* (version 8) in Rust so that
+# Pixel Connect can offer device discovery, pairing, clipboard sharing and file
+# sharing without requiring KDE Connect / kdeconnectd to be installed.
+#
+# Derived from the protocol behaviour of:
+#   https://github.com/KDE/kdeconnect-kde     (GPL-2.0-only OR GPL-3.0-only
+#                                               OR LicenseRef-KDE-Accepted-GPL)
+#   https://github.com/KDE/kdeconnect-android (GPL-2.0-only OR GPL-3.0-only
+#                                               OR LicenseRef-KDE-Accepted-GPL)
+#
+# No KDE Connect source code is copied verbatim into this crate. The wire
+# format, packet names, body keys, TLS identity rules and pairing semantics are
+# reproduced so that this implementation is interoperable with the upstream
+# desktop and Android clients. See ../NOTICE.md for full attribution and
+# ../docs/architecture/repo-audit.md for the reuse decision record.
+
+[package]
+name = "pixel_connect_kdeconnect"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0"
+description = "KDE Connect protocol v8 implementation (LAN backend) for Pixel Connect"
+publish = false
+
+[[bin]]
+# Development tool: starts the backend and reports what it discovers. See
+# src/bin/kc_probe.rs.
+name = "kc-probe"
+path = "src/bin/kc_probe.rs"
+
+[[test]]
+# Live discovery check; run explicitly with --ignored.
+name = "discovery_live"
+path = "tests/discovery_live.rs"
+
+[dependencies]
+anyhow = "1.0"
+fern = { version = "0.7" }
+
+arc-swap = "1"
+base64 = "0.22"
+dirs = "6.0"
+futures = "0.3"
+get_if_addrs = "0.5"
+hostname = "0.4"
+log = "0.4"
+rand = "0.9"
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+socket2 = { version = "0.6", features = ["all"] }
+thiserror = "2.0"
+time = { version = "0.3", features = ["formatting"] }
+tokio = { version = "1.43", features = ["macros", "rt", "rt-multi-thread", "net", "sync", "time", "io-util", "fs", "signal", "process"] }
+mdns-sd = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = "2"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+ts-rs = { version = "10.0", features = ["serde-compat"] }
+uuid = { version = "1.15", features = ["v4"] }
+x509-parser = "0.16"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+flume = "0.11"
+mdns-sd = "0.11"
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }
+
+[[test]]
+name = "interop"
+path = "tests/interop.rs"
+
+[profile.release]
+opt-level = 3

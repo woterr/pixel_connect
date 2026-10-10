@@ -1,0 +1,43 @@
+{
+  "name": "pixel-connect",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "tauri": "tauri",
+    "build:debug": "tauri build -d",
+    "build": "tauri build",
+    "vite:dev": "vite dev",
+    "vite:build": "vite build",
+    "test": "vitest run",
+    "ts-check": "vue-tsc --noEmit",
+    "preview": "vite preview",
+    "check": "cd src-tauri && cargo check",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.3",
+    "@tauri-apps/plugin-autostart": "^2.0.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.1",
+    "@tauri-apps/plugin-notification": "^2.0.0",
+    "@tauri-apps/plugin-opener": "^2.2.5",
+    "@tauri-apps/plugin-shell": "^2.0.1",
+    "@tauri-apps/plugin-store": "^2.1.0",
+    "pinia": "^2.2.6",
+    "vue": "3.5.12"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.4",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.4.47",
+    "postcss-import": "16.1.0",
+    "postcss-nesting": "13.0.1",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "unplugin-auto-import": "^0.19.0",
+    "vite": "^5.4.10",
+    "vitest": "2.1.4",
+    "vue-tsc": "^2.1.10"
+  }
+}
