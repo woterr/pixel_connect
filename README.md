@@ -23,20 +23,39 @@ server.
 
 ## Status
 
-V1 is complete and documented. See:
+Current release: **V2**. Documentation:
 
-* [`docs/architecture/repo-audit.md`](docs/architecture/repo-audit.md) — what was
-  found in the upstream repositories, and why the KDE Connect protocol was ported
-  rather than bundled.
-* [`docs/architecture/v1-implementation-plan.md`](docs/architecture/v1-implementation-plan.md)
-  — the chosen architecture and the reasoning behind each decision.
-* [`docs/architecture/v1-status.md`](docs/architecture/v1-status.md) — what is
-  implemented, what was verified and how, and what remains incomplete.
+| Document | Contents |
+|---|---|
+| [`repo-audit.md`](docs/architecture/repo-audit.md) | what was found in the upstream repositories, and why the KDE Connect protocol was ported rather than bundled |
+| [`v1-implementation-plan.md`](docs/architecture/v1-implementation-plan.md) | the architecture and the reasoning behind each decision |
+| [`v1-status.md`](docs/architecture/v1-status.md) | the V1 baseline: what was built, verified and how |
+| [`v2-status.md`](docs/architecture/v2-status.md) | what V2 changed, including the measurements that replaced two V1 assumptions |
+| [`v2-transport-findings.md`](docs/architecture/v2-transport-findings.md) | Bluetooth and Wi-Fi Direct, investigated against real hardware |
 
-**Read the status document before relying on anything here.** In particular,
-no Pixel phone was attached during development: interoperability with
-`kdeconnect-android` is therefore unverified, although interoperability with
-the upstream KDE Connect desktop daemon *is* verified.
+**Read the status documents before relying on anything here.** In particular,
+no Pixel phone has been attached at any point, so interoperability with
+`kdeconnect-android` is unverified, although interoperability with the
+upstream KDE Connect desktop daemon *is* verified.
+
+### What V2 changed
+
+- **Clipboard sync now runs in the background on GNOME.** V1 assumed it could
+  not; measuring showed mutter mirrors the Wayland selection into the X11 one,
+  so the selection is reachable without focus (verified 6/6 on read, 3/3 on
+  write). See [v2-status.md §2](docs/architecture/v2-status.md).
+- **The notification protocol was wrong in five places** — V1 used field names
+  neither implementation sends. Corrected, and typed reply now works.
+- **Transfers can be cancelled**, the way KDE Connect itself cancels: by
+  dropping the payload socket. Pause remains disabled because the protocol has
+  no pause packet.
+- **Bluetooth and Wi-Fi Direct were investigated against real hardware**, not
+  inferred. Neither is implemented; both have measured blockers recorded in
+  code and documented.
+- **Signing, CI and a real-device acceptance harness** were added.
+
+112 automated tests pass. The single most valuable remaining step is to attach a
+Pixel and run `scripts/device-acceptance.sh --record`.
 
 ---
 
