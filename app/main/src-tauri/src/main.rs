@@ -230,35 +230,52 @@ async fn main() -> Result<(), anyhow::Error> {
             let kc_dir = kdc::kdeconnect_config_dir(&handle);
             let settings_snapshot = s.clone();
             std::thread::spawn(move || {
-                let result = tokio::runtime::Builder::new_current_thread()
+                let rt = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .map_err(anyhow::Error::from)
-                    .and_then(|rt| {
-                        rt.block_on(async move {
-                            let (service, _rx) = KdeConnectService::start(&kc_dir).await?;
-                            if !settings_snapshot.kde_device_name.is_empty() {
-                                let _ = service
-                                    .set_device_name(&settings_snapshot.kde_device_name)
-                                    .await;
-                            }
-                            if let Some(incoming) = &settings_snapshot.incoming_path {
-                                service
-                                    .set_incoming_path(std::path::PathBuf::from(incoming))
-                                    .await;
-                            }
-                            service.settings().clipboard_enabled.store(
-                                settings_snapshot.clipboard_enabled,
-                                std::sync::atomic::Ordering::SeqCst,
-                            );
-                            service.settings().auto_clipboard.store(
-                                settings_snapshot.clipboard_auto_share,
-                                std::sync::atomic::Ordering::SeqCst,
-                            );
-                            Ok(KdcState::new(service))
-                        })
-                    });
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        let _ = tx.send(Err(anyhow::Error::from(e)));
+                        return;
+                    }
+                };
+                let result = rt.block_on(async move {
+                    let (service, _rx) = KdeConnectService::start(&kc_dir).await?;
+                    if !settings_snapshot.kde_device_name.is_empty() {
+                        let _ = service
+                            .set_device_name(&settings_snapshot.kde_device_name)
+                            .await;
+                    }
+                    if let Some(incoming) = &settings_snapshot.incoming_path {
+                        service
+                            .set_incoming_path(std::path::PathBuf::from(incoming))
+                            .await;
+                    }
+                    service.settings().clipboard_enabled.store(
+                        settings_snapshot.clipboard_enabled,
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    service.settings().auto_clipboard.store(
+                        settings_snapshot.clipboard_auto_share,
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    Ok(KdcState::new(service))
+                });
+                let started = result.is_ok();
                 let _ = tx.send(result);
+
+                // `KdeConnectService::start` spawns the accept loop, the UDP
+                // discovery loop and the mDNS loop onto *this* runtime. Dropping
+                // a Tokio runtime cancels every task still running on it, so
+                // holding it for the life of the process is what keeps
+                // discovery working. Letting it fall out of scope here is why
+                // the application never saw a phone on the network despite
+                // reporting a successful start: the TCP port was bound, the UDP
+                // socket was created, and both were dropped microseconds later.
+                if started {
+                    rt.block_on(async { std::future::pending::<()>().await });
+                }
             });
             let kdc_state = rx.recv().map_err(|_| {
                 anyhow::anyhow!("the KDE Connect backend thread stopped unexpectedly")
