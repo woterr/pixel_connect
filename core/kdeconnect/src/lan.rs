@@ -18,11 +18,13 @@
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::Semaphore;
 
@@ -285,14 +287,25 @@ impl LanLinkProvider {
         crate::discovery::note_local_tcp_port(port);
         info!("KDE Connect listening on TCP port {port}");
 
-        // The UDP discovery port is fixed by the protocol and may already be
-        // held by another KDE Connect implementation on this machine. That
-        // must not stop Pixel Connect: we simply cannot *discover* peers by
-        // broadcast, and peers will still find *us* through mDNS, which does
-        // not need a privileged fixed port.
-        let udp = match UdpSocket::bind(("0.0.0.0", UDP_PORT)).await {
+        // The UDP discovery port is fixed by the protocol and is very likely
+        // already held by another KDE Connect implementation on this machine
+        // (a stock `kdeconnectd`, for example).
+        //
+        // Losing it entirely used to mean "mDNS only", which on this desktop
+        // silently does not work: Quick Share links a *different* `mdns-sd`
+        // implementation that also binds UDP 5353, and the two daemons split
+        // the multicast traffic between them, so KDE Connect's browse saw no
+        // replies at all and no phone was ever discovered.
+        //
+        // We only ever *receive* on this socket, so there is no reason to
+        // refuse to share the port. SO_REUSEADDR plus SO_REUSEPORT lets us
+        // bind it alongside the other daemon and receive the broadcast
+        // announcements directly, which is what upstream KDE Connect relies
+        // on primarily.
+        let udp = match bind_shared_udp(UDP_PORT).await {
             Ok(sock) => {
                 let _ = sock.set_broadcast(true);
+                info!("UDP discovery socket bound on port {UDP_PORT} (shared)");
                 Some(sock)
             }
             Err(e) => {
@@ -374,6 +387,7 @@ impl LanLinkProvider {
 
     pub async fn refresh_devices(&self) {
         let peers = crate::discovery::snapshot();
+        log::debug!("refresh_devices: {} discovered peer(s)", peers.len());
         if peers.is_empty() {
             return;
         }
@@ -550,6 +564,42 @@ fn sanitize_hostname(name: &str) -> String {
     } else {
         cleaned.chars().take(63).collect()
     }
+}
+
+/// Bind a UDP port that may already be held by another process.
+///
+/// KDE Connect's discovery port is a fixed protocol constant, so a stock
+/// `kdeconnectd` on the same machine will usually have it first. Failing to
+/// bind at all used to push discovery onto mDNS alone, which is unreliable
+/// here, so the socket is opened for sharing instead. This only affects who
+/// may *receive* on the port; nothing is sent to it except the standard
+/// discovery broadcast.
+async fn bind_shared_udp(port: u16) -> std::io::Result<UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    // SAFETY: `setsockopt` only reads well-formed option values; `libc`'s
+    // `c_int` is the type the kernel expects for SO_REUSEPORT.
+    let enabled: libc::c_int = 1;
+    unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_REUSEPORT,
+            &enabled as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+    }
+    socket.set_broadcast(true)?;
+    socket.bind(&socket2::SockAddr::from(SocketAddr::from((
+        [0, 0, 0, 0],
+        port,
+    ))))?;
+    // `socket2` sockets start in blocking mode; tokio refuses to register a
+    // blocking file descriptor on its reactor.
+    socket.set_nonblocking(true)?;
+    UdpSocket::from_std(socket.into())
 }
 
 async fn bind_tcp_listener(min: u16, max: u16) -> Result<TcpListener> {

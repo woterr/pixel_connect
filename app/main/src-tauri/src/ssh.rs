@@ -113,8 +113,7 @@ pub fn validate(target: &SshTarget) -> Result<(), String> {
             // corrupt the `user@host` split, and `=` would interfere with the
             // option syntax this check exists to prevent.
             .any(|c| {
-                c.is_whitespace()
-                    || matches!(c, '\0' | ':' | '@' | '/' | '\\' | '=' | '-' | '?')
+                c.is_whitespace() || matches!(c, '\0' | ':' | '@' | '/' | '\\' | '=' | '-' | '?')
             })
     {
         return Err("username contains invalid characters".into());
@@ -329,14 +328,21 @@ mod tests {
     #[test]
     fn an_injected_username_never_reaches_the_command_line() {
         // Belt and braces: even if validation were bypassed, the host is always
-        // appended, so the argument can never *begin* with a dash.
+        // appended, so the argument can never *begin* with a dash and be read
+        // as an option by ssh.
         let mut t = target();
         t.username = "-oProxyCommand=id".into();
         if validate(&t).is_ok() {
             let args = probe_args(&t);
             let dest = args.last().unwrap();
-            assert!(dest.starts_with("user@") || dest.starts_with("-") == false);
-            assert!(!dest.starts_with('-'), "destination must not look like an option");
+            assert!(
+                !dest.starts_with('-'),
+                "destination must not look like an option: {dest:?}"
+            );
+            assert!(
+                dest.contains('@'),
+                "destination must still be user@host: {dest:?}"
+            );
         }
     }
 

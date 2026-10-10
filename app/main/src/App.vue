@@ -68,8 +68,16 @@ async function boot() {
 	}
 
 	// Periodic device/ADB refresh keeps the UI honest about real state.
+	//
+	// `kdeRefresh` asks the backend to dial every peer it has discovered.
+	// Reading `kdeDevices` alone only re-reads the list, so without this a
+	// phone that appears on the network is discovered but never connected, and
+	// therefore never appears in the list at all.
 	const timer = setInterval(() => {
-		store.refreshAll().catch(() => undefined)
+		api
+			.kdeRefresh()
+			.catch(() => undefined)
+			.finally(() => store.refreshAll().catch(() => undefined))
 	}, 6000)
 	unlisteners.push(() => clearInterval(timer))
 
@@ -123,6 +131,11 @@ function navigate(next: ViewName) {
 }
 
 onMounted(boot)
+
+// Ask the backend to dial everything it has already discovered, once, as soon
+// as the application starts. Without this the first device list stays empty
+// until the periodic poll above happens to fire.
+api.kdeRefresh().catch(() => undefined)
 onBeforeUnmount(() => {
 	for (const fn of unlisteners) {
 		try {
