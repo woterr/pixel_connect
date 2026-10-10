@@ -74,12 +74,19 @@ def _notify(parent, kind, message):
         return
     except Exception:
         pass
+    # Every fallback here has to tolerate `parent` being None or lacking the
+    # method: this runs inside Nautilus's process, where an exception escaping
+    # is logged as an unhandled error and the user simply never learns whether
+    # the send worked.
     try:
-        window = parent.get_window() if hasattr(parent, "get_window") else None
+        getter = getattr(parent, "get_window", None)
+        window = getter() if callable(getter) else None
         if window is not None:
             window.emit("message", "Pixel Connect", message)
+            return
     except Exception:
-        print(f"Pixel Connect: {message}")
+        pass
+    print(f"Pixel Connect: {message}")
 
 
 def backend_running():
@@ -201,7 +208,16 @@ class PixelConnectMenuProvider(GObject.GObject, Nautilus.MenuProvider):
             # Connect's own behaviour.
             uris.append(uri)
         ok, message = send(uris)
-        _notify(self.get_window(), "INFO" if ok else "ERROR", message)
+        # Pass `self`, not `self.get_window()`. MenuProvider has no
+        # `get_window` method, so calling it here raised
+        #
+        #     AttributeError: 'PixelConnectMenuProvider' object has no
+        #     attribute 'get_window'
+        #
+        # on every activation, and the user got no notification at all - the
+        # send silently appeared to do nothing. `_notify` resolves the window
+        # itself and tolerates its absence.
+        _notify(self, "INFO" if ok else "ERROR", message)
 
 # No explicit `GObject.type_register()` here.
 #
