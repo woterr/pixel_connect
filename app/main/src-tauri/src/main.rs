@@ -191,18 +191,33 @@ async fn main() -> Result<(), anyhow::Error> {
             let qs_port = s.port;
             let qs_download = download.clone();
             std::thread::spawn(move || {
-                let result = tokio::runtime::Builder::new_current_thread()
+                let rt = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .map_err(anyhow::Error::from)
-                    .and_then(|rt| {
-                        rt.block_on(async move {
-                            let mut qs = QuickShareService::new(qs_vis, qs_port, qs_download);
-                            let _ = qs.run().await?;
-                            Ok(qs)
-                        })
-                    });
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        let _ = tx.send(Err(anyhow::Error::from(e)));
+                        return;
+                    }
+                };
+                let result = rt.block_on(async move {
+                    let mut qs = QuickShareService::new(qs_vis, qs_port, qs_download);
+                    let _ = qs.run().await?;
+                    Ok(qs)
+                });
+                let started = result.is_ok();
                 let _ = tx.send(result);
+
+                // `QuickShareService::run` spawns its TCP server, mDNS
+                // advertising and BLE advertising onto this runtime and then
+                // returns. Dropping the runtime cancels all of them, so the
+                // service announces a port it is no longer listening on and
+                // neither side can discover the other. Hold it open, exactly as
+                // the KDE Connect backend thread above now does.
+                if started {
+                    rt.block_on(async { std::future::pending::<()>().await });
+                }
             });
             let qs = rx
                 .recv()
