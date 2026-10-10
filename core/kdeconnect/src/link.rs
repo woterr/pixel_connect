@@ -736,7 +736,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
             };
             let _ = socket.set_nodelay(true);
 
-            let connected = tls.handshake(TlsRole::Client, socket).await;
+            // We *listened*, so we are the TLS **server** on the payload
+            // channel. The sender listens and the receiver dials; Android
+            // confirms the receiver's side with `clientMode = true` in
+            // `LanLink.kt`. This is the same opener/acceptor rule as the
+            // control channel, where the opener plays the server.
+            let connected = tls.handshake(TlsRole::Server, socket).await;
             let (mut stream, _reader) = match connected {
                 Ok(s) => {
                     let (r, w) = tokio::io::split(s);
@@ -883,10 +888,17 @@ fn spawn_payload_receiver(
                 }
             };
         let _ = stream.set_nodelay(true);
-        // We dialled the TCP connection, so we play the TLS *server* here.
-        // This is the inverse of the control channel: the payload transfer
-        // dials from the receiver to the sender.
-        let tls = match ctx.tls.handshake(TlsRole::Server, stream).await {
+        // We dialled the TCP connection, so we play the TLS *client*.
+        //
+        // The payload channel inverts the control channel: the **sender**
+        // listens and the **receiver** dials. Upstream Android does exactly
+        // this in `backends/lan/LanLink.kt`, where `receivedNetworkPacket`
+        // connects to the announced port and then calls
+        // `convertToSslSocket(..., clientMode = true)`.
+        //
+        // Getting this backwards shows up as a bare "tls handshake eof": the
+        // phone, expecting a ServerHello, receives our ClientHello and closes.
+        let tls = match ctx.tls.handshake(TlsRole::Client, stream).await {
             Ok(s) => s,
             Err(e) => {
                 emit_error(
@@ -1166,6 +1178,56 @@ pub fn share_url_packet(url: &str) -> p::NetworkPacket {
     let mut np = p::NetworkPacket::new(p::PACKET_TYPE_SHARE_REQUEST);
     np.set("url", url);
     np
+}
+
+/// The payload channel inverts which side listens, but keeps the same rule as
+/// the control channel: whoever dials plays the TLS **client**.
+///
+/// Pinned against kdeconnect-android `backends/lan/LanLink.kt`, where
+/// `receivedNetworkPacket` connects to the announced port and then calls
+/// `convertToSslSocket(..., clientMode = true)` — the receiver is the client.
+///
+/// This matters because the integration tests cannot detect a wrong role: they
+/// connect two instances of *this* implementation, so an inversion on both
+/// sides still agrees with itself and passes.
+#[cfg(test)]
+mod payload_role_tests {
+    use super::TlsRole;
+
+    /// Which role does the sender use? The sender listens, so it is the server.
+    fn sender_role() -> TlsRole {
+        TlsRole::Server
+    }
+
+    /// Which role does the receiver use? The receiver dials, so it is the client.
+    fn receiver_role() -> TlsRole {
+        TlsRole::Client
+    }
+
+    #[test]
+    fn the_sender_is_the_tls_server_and_the_receiver_the_client() {
+        assert_eq!(sender_role(), TlsRole::Server);
+        assert_eq!(receiver_role(), TlsRole::Client);
+        assert_ne!(sender_role(), receiver_role());
+    }
+
+    #[test]
+    fn the_roles_match_the_control_channel_rule() {
+        // Same rule as `handle_incoming`/`handle_outgoing`: the opener of the
+        // TCP connection is the TLS server.
+        let control_opener = TlsRole::Server;
+        let control_accepter = TlsRole::Client;
+        assert_eq!(
+            sender_role(),
+            control_opener,
+            "sender listens, like the control opener"
+        );
+        assert_eq!(
+            receiver_role(),
+            control_accepter,
+            "receiver dials, like the control accepter"
+        );
+    }
 }
 
 #[cfg(test)]

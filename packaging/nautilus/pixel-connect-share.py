@@ -32,7 +32,20 @@ import urllib.parse
 
 import gi
 
-gi.require_version("Nautilus", "4.0")
+# Nautilus has bumped this namespace more than once and distros ship different
+# typelibs: Fedora 44 provides `Nautilus-4.1.typelib` only, so requiring "4.0"
+# outright makes the extension fail to import and the context-menu entry never
+# appears at all. Try the newest first and fall back.
+_NAUTILUS_VERSION = None
+for _candidate in ("4.1", "4.0", "3.0"):
+    try:
+        gi.require_version("Nautilus", _candidate)
+        _NAUTILUS_VERSION = _candidate
+        break
+    except ValueError:
+        continue
+if _NAUTILUS_VERSION is None:
+    raise ImportError("no usable Nautilus typelib found (tried 4.1, 4.0, 3.0)")
 gi.require_version("Gtk", "3.0")
 from gi.repository import GObject, Nautilus  # noqa: E402
 

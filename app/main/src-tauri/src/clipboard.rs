@@ -173,18 +173,29 @@ pub fn read_text() -> Option<String> {
 /// per poll produced thousands of identical warnings an hour and turned a
 /// transient condition into unbounded log growth. One handle, reused, keeps the
 /// fallback notice to a single line at start-up.
-fn x11_clipboard() -> Option<&'static std::sync::Mutex<arboard::Clipboard>> {
-    use std::sync::OnceLock;
-    static HANDLE: OnceLock<Option<std::sync::Mutex<arboard::Clipboard>>> = OnceLock::new();
-    HANDLE
-        .get_or_init(|| arboard::Clipboard::new().ok().map(std::sync::Mutex::new))
-        .as_ref()
+fn x11_clipboard() -> Option<&'static std::sync::Mutex<Option<arboard::Clipboard>>> {
+    use std::sync::{Mutex, OnceLock};
+    static HANDLE: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
+    let cell = HANDLE.get_or_init(|| Mutex::new(None));
+
+    let mut guard = cell.lock().ok()?;
+    // A failure must not be cached for the life of the process. The very first
+    // attempt can easily happen before the X connection is usable, and caching
+    // that failure silently disables the clipboard until the app restarts.
+    if guard.is_none() {
+        *guard = arboard::Clipboard::new().ok();
+        if guard.is_none() {
+            return None;
+        }
+    }
+    drop(guard);
+    Some(cell)
 }
 
 fn read_x11() -> Option<String> {
-    let handle = x11_clipboard()?;
-    let mut guard = handle.lock().ok()?;
-    guard.get_text().ok().filter(|s| !s.is_empty())
+    let cell = x11_clipboard()?;
+    let mut guard = cell.lock().ok()?;
+    guard.as_mut()?.get_text().ok().filter(|s| !s.is_empty())
 }
 
 fn read_wayland() -> Option<String> {
@@ -213,12 +224,15 @@ pub fn set_text_blocking(text: String) {
             // The process stays alive for the whole session, so arboard keeps
             // owning the selection and the text remains pasteable.
             match x11_clipboard() {
-                Some(handle) => match handle.lock() {
-                    Ok(mut guard) => {
-                        if let Err(e) = guard.set_text(text) {
-                            log::error!("could not set the clipboard: {e}");
+                Some(cell) => match cell.lock() {
+                    Ok(mut guard) => match guard.as_mut() {
+                        Some(cb) => {
+                            if let Err(e) = cb.set_text(text) {
+                                log::error!("could not set the clipboard: {e}");
+                            }
                         }
-                    }
+                        None => log::error!("the clipboard is not available"),
+                    },
                     Err(_) => log::error!("the clipboard is locked by another task"),
                 },
                 None => log::error!("could not open the clipboard to set it"),

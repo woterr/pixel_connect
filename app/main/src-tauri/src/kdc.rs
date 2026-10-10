@@ -155,6 +155,11 @@ async fn handle_event(app: &AppHandle, state: &Arc<KdcState>, event: KcEvent) ->
             // local change is not sent straight back to the phone.
             crate::clipboard::remember_applied(&content);
             crate::clipboard::set_text(content.clone());
+            log::info!(
+                "applying {} clipboard bytes from {device_name} via {:?}",
+                content.len(),
+                crate::clipboard::ClipboardMechanism::detect()
+            );
             let _ = app.emit(
                 "kdeconnect:clipboard",
                 serde_json::json!({ "deviceId": device_id, "deviceName": device_name }),
