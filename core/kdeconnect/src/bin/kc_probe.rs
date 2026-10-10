@@ -20,9 +20,7 @@ async fn main() -> anyhow::Result<()> {
     // RUST_LOG and defaults to `info` so mDNS activity is visible.
     let level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     let _ = fern::Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!("[{}] {}", record.level(), message))
-        })
+        .format(|out, message, record| out.finish(format_args!("[{}] {}", record.level(), message)))
         .level(log::LevelFilter::from_str(&level).unwrap_or(log::LevelFilter::Info))
         .chain(std::io::stdout())
         .apply();
@@ -42,9 +40,8 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let dir = std::path::PathBuf::from(
-        dir.unwrap_or_else(|| "/tmp/pixel-connect-kc-probe".to_string()),
-    );
+    let dir =
+        std::path::PathBuf::from(dir.unwrap_or_else(|| "/tmp/pixel-connect-kc-probe".to_string()));
     std::fs::create_dir_all(&dir)?;
 
     let (service, mut events) = KdeConnectService::start(&dir).await?;
@@ -59,7 +56,6 @@ async fn main() -> anyhow::Result<()> {
     let mut refresh = tokio::time::interval(Duration::from_secs(3));
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    let discovered;
     loop {
         tokio::select! {
             _ = tokio::time::sleep_until(deadline.into()) => break,
@@ -104,10 +100,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let devices = service.devices().await;
-    discovered = devices
-        .iter()
-        .filter(|d| d.id != service.device_info().id)
-        .count();
+    let me = service.device_info().id;
+    let discovered = devices.iter().filter(|d| d.id != me).count();
 
     println!();
     println!("discovered peers: {discovered}");
@@ -115,7 +109,10 @@ async fn main() -> anyhow::Result<()> {
         if d.id == service.device_info().id {
             continue;
         }
-        println!("  {} — {} ({:?}, {:?})", d.name, d.id, d.link_state, d.transport);
+        println!(
+            "  {} — {} ({:?}, {:?})",
+            d.name, d.id, d.link_state, d.transport
+        );
     }
 
     service.shutdown();

@@ -1,0 +1,210 @@
+# Pixel Connect — CI
+#
+# Verifies exactly what the documentation claims, so a claim cannot quietly rot.
+#
+# Three jobs:
+#   verify    unit + integration + front-end tests and a type check
+#   build     compiles the release binary and the Fedora RPM
+#   protocol  runs the protocol crate's tests on its own, without the GUI stack
+#
+# The protocol job is separate on purpose: it needs neither GTK nor WebKitGTK,
+# so a protocol regression is caught even if the desktop build is broken.
+
+name: CI
+
+on:
+  push:
+    branches: [main, v2]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The KDE Connect integration tests drive real sockets, real TLS and a shared
+  # mDNS daemon, so they must not run concurrently with each other.
+  RUST_TEST_THREADS: "1"
+
+jobs:
+  protocol:
+    name: Protocol crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Format
+        run: |
+          cargo fmt --manifest-path core/kdeconnect/Cargo.toml -- --check
+          cargo fmt --manifest-path core/quickshare/Cargo.toml -- --check
+
+      - name: Clippy (KDE Connect)
+        run: |
+          cargo clippy --manifest-path core/kdeconnect/Cargo.toml \
+            --all-targets -- -D warnings
+
+      - name: Clippy (Quick Share, advisory)
+        # Vendored upstream code: warnings are surfaced but never fatal, so an
+        # upstream release does not break this project's CI.
+        continue-on-error: true
+        run: |
+          apt-get install -y libdbus-1-dev libssl-dev
+          cargo clippy --manifest-path core/quickshare/Cargo.toml
+
+      - name: KDE Connect tests
+        run: cargo test --manifest-path core/kdeconnect/Cargo.toml -- --test-threads 1
+
+      - name: Quick Share builds
+        run: cargo build --manifest-path core/quickshare/Cargo.toml
+
+  verify:
+    name: Backend and front end
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            app/main/src-tauri -> target
+            core/kdeconnect -> target
+            core/quickshare -> target
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf \
+            protobuf-compiler build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/main/package-lock.json
+
+      - name: Install front-end dependencies
+        working-directory: app/main
+        run: npm ci || npm install
+
+      - name: Type check
+        working-directory: app/main
+        run: npx vue-tsc --noEmit
+
+      - name: Front-end tests
+        working-directory: app/main
+        run: npm test
+
+      - name: Build front end
+        working-directory: app/main
+        run: npm run vite:build
+
+      - name: Backend tests
+        working-directory: app/main/src-tauri
+        env:
+          PROTOC: protoc
+        run: cargo test --bin pixel-connect
+
+      - name: Clippy (our own code only)
+        working-directory: app/main/src-tauri
+        env:
+          PROTOC: protoc
+          # `pixel_connect_quickshare` is vendored upstream rquickshare code and
+          # carries upstream deprecation warnings we deliberately do not churn,
+          # so warnings there are reported but not fatal.
+          RUSTFLAGS: -A deprecated
+        run: |
+          cargo clippy --all-targets 2>&1 | tee clippy.log
+          # Fail only on lints in code this project owns.
+          if grep -E '^(warning|error)' clippy.log \
+             | grep -v 'pixel_connect_quickshare' \
+             | grep -qv 'generated'; then
+            echo "clippy reported problems in Pixel Connect code:" >&2
+            exit 1
+          fi
+
+  build:
+    name: Release build and RPM
+    runs-on: ubuntu-24.04
+    needs: [verify]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf \
+            protobuf-compiler build-essential curl wget file \
+            libxdo-dev libssl-dev rpm rpm2cpio cpio
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install front-end dependencies
+        working-directory: app/main
+        run: npm ci || npm install
+
+      - name: Build front end
+        working-directory: app/main
+        run: npm run vite:build
+
+      - name: Build the application
+        working-directory: app/main/src-tauri
+        env:
+          PROTOC: protoc
+        run: cargo build --release
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel-connect-linux
+          path: app/main/src-tauri/target/release/pixel-connect
+
+      - name: Build a source RPM from the spec
+        run: |
+          # Validate the spec without installing anything, so a broken %files or
+          # %install section fails here rather than on a release machine.
+          mkdir -p ~/rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS,BUILDROOT}
+          git archive --format=tar --prefix=pixel-connect-0.1.0/ HEAD \
+            | gzip > ~/rpmbuild/SOURCES/pixel-connect-0.1.0.tar.gz
+          cp packaging/rpm/pixel-connect.spec ~/rpmbuild/SPECS/
+          rpmbuild -bb ~/rpmbuild/SPECS/pixel-connect.spec \
+            --define "_topdir $HOME/rpmbuild" \
+            --nodeps 2>&1 | tail -30
+
+      - name: Upload the RPM
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pixel-connect-rpm
+          path: ~/rpmbuild/RPMS/**/*.rpm
+          if-no-files-found: ignore

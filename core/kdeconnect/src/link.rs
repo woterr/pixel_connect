@@ -24,10 +24,10 @@ use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use crate::deviceinfo::DeviceInfo;
 use crate::framing::{LineReader, PacketWriter};
 use crate::lan::{KcEvent, LinkCommand, LinkContext};
-use crate::pairing::{PairingAction, PairingHandler, PairState};
 use crate::packet as p;
+use crate::pairing::{PairState, PairingAction, PairingHandler};
 use crate::tls::{TlsRole, TlsStream};
-use crate::types::{KcDevice, LinkState, ShareOffer, Transport, TransferProgress};
+use crate::types::{KcDevice, LinkState, ShareOffer, TransferProgress, Transport};
 
 /// Cap on the size of an inbound text/URL share we will surface.
 pub const MAX_TEXT_SHARE_BYTES: usize = 256 * 1024;
@@ -148,10 +148,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
         // Register the command channel *before* announcing the device, so the
         // published state really does reflect a usable link.
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<LinkCommand>(32);
-        self.links
-            .lock()
-            .await
-            .insert(self.peer.id.clone(), cmd_tx);
+        self.links.lock().await.insert(self.peer.id.clone(), cmd_tx);
 
         self.publish().await;
 
@@ -324,7 +321,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
             .pairing
             .handle_packet(&np, trusted, &our_key, &self.peer_spki);
         match action {
-            PairingAction::IncomingRequest { verification_key, .. } => {
+            PairingAction::IncomingRequest {
+                verification_key, ..
+            } => {
                 let device = self
                     .devices
                     .write()
@@ -533,9 +532,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
             app_name: np.get_str("appName").unwrap_or_default(),
             timestamp,
             actions,
-            request_reply_id: np
-                .get_str("requestReplyId")
-                .filter(|s| !s.is_empty()),
+            request_reply_id: np.get_str("requestReplyId").filter(|s| !s.is_empty()),
             is_clearable: np.body.get_bool("isClearable").unwrap_or(true),
             silent: np.body.get_bool("silent").unwrap_or(false),
             group_name: np.get_str("groupName").filter(|s| !s.is_empty()),
@@ -769,9 +766,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                     Ok(0) => break,
                     Ok(n) => n,
                     Err(e) => {
-                        emit_error(
-                            &events, &device_id, &filename, sent, total, &e.to_string(),
-                        );
+                        emit_error(&events, &device_id, &filename, sent, total, &e.to_string());
                         return;
                     }
                 };
@@ -794,9 +789,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                     return;
                 }
                 if let Err(e) = stream.write_all(&buf[..n]).await {
-                    emit_error(
-                        &events, &device_id, &filename, sent, total, &e.to_string(),
-                    );
+                    emit_error(&events, &device_id, &filename, sent, total, &e.to_string());
                     return;
                 }
                 sent += n as u64;
@@ -874,22 +867,21 @@ fn spawn_payload_receiver(
 
     tokio::spawn(async move {
         let addr = SocketAddr::new(control_ip, port);
-        let stream = match tokio::time::timeout(Duration::from_secs(20), TcpStream::connect(addr))
-            .await
-        {
-            Ok(Ok(s)) => s,
-            _ => {
-                emit_error(
-                    &events,
-                    &device_id,
-                    &filename,
-                    0,
-                    total,
-                    &format!("Could not connect to {addr} for the file payload"),
-                );
-                return;
-            }
-        };
+        let stream =
+            match tokio::time::timeout(Duration::from_secs(20), TcpStream::connect(addr)).await {
+                Ok(Ok(s)) => s,
+                _ => {
+                    emit_error(
+                        &events,
+                        &device_id,
+                        &filename,
+                        0,
+                        total,
+                        &format!("Could not connect to {addr} for the file payload"),
+                    );
+                    return;
+                }
+            };
         let _ = stream.set_nodelay(true);
         // We dialled the TCP connection, so we play the TLS *server* here.
         // This is the inverse of the control channel: the payload transfer
@@ -958,21 +950,29 @@ fn spawn_payload_receiver(
                 Ok(n) => {
                     if let Err(e) = file.write_all(&buf[..n]).await {
                         let _ = tokio::fs::remove_file(&tmp).await;
-                        emit_error(&events, &device_id, &filename, received, total, &e.to_string());
+                        emit_error(
+                            &events,
+                            &device_id,
+                            &filename,
+                            received,
+                            total,
+                            &e.to_string(),
+                        );
                         return;
                     }
                     received += n as u64;
                     if last_emit.elapsed() > Duration::from_millis(200) {
-                        let _ = events.send(KcEvent::TransferProgress(Box::new(TransferProgress {
-                            id: device_id.clone(),
-                            device_id: device_id.clone(),
-                            filename: filename.clone(),
-                            bytes: received,
-                            total,
-                            done: false,
-                            cancelled: false,
-                            error: None,
-                        })));
+                        let _ =
+                            events.send(KcEvent::TransferProgress(Box::new(TransferProgress {
+                                id: device_id.clone(),
+                                device_id: device_id.clone(),
+                                filename: filename.clone(),
+                                bytes: received,
+                                total,
+                                done: false,
+                                cancelled: false,
+                                error: None,
+                            })));
                         last_emit = std::time::Instant::now();
                     }
                 }
@@ -988,7 +988,14 @@ fn spawn_payload_receiver(
                         break;
                     }
                     let _ = tokio::fs::remove_file(&tmp).await;
-                    emit_error(&events, &device_id, &filename, received, total, &e.to_string());
+                    emit_error(
+                        &events,
+                        &device_id,
+                        &filename,
+                        received,
+                        total,
+                        &e.to_string(),
+                    );
                     return;
                 }
             }
@@ -1085,7 +1092,10 @@ pub fn share_file_packet(path: &std::path::Path) -> p::NetworkPacket {
     }
     np.set("open", false);
     np.set("numberOfFiles", 1u64);
-    np.set("totalPayloadSize", meta.as_ref().map(|m| m.len()).unwrap_or(0));
+    np.set(
+        "totalPayloadSize",
+        meta.as_ref().map(|m| m.len()).unwrap_or(0),
+    );
     np
 }
 
@@ -1146,13 +1156,12 @@ mod tests {
 
     #[test]
     fn text_and_url_shares_use_distinct_keys() {
-        assert_eq!(
-            share_text_packet("hi").get_str("text").unwrap(),
-            "hi"
-        );
+        assert_eq!(share_text_packet("hi").get_str("text").unwrap(), "hi");
         assert!(!share_text_packet("hi").has("url"));
         assert_eq!(
-            share_url_packet("https://example.org").get_str("url").unwrap(),
+            share_url_packet("https://example.org")
+                .get_str("url")
+                .unwrap(),
             "https://example.org"
         );
         assert!(!share_url_packet("https://example.org").has("filename"));

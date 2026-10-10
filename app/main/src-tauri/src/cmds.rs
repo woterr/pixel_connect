@@ -8,9 +8,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
 #[allow(unused_imports)]
 use tauri::Manager as _ManagerTrait;
+use tauri::{AppHandle, State};
 
 use crate::adb::ToolAvailability;
 use crate::kdc::KdcState;
@@ -46,10 +46,10 @@ pub fn app_info(app: AppHandle, state: Shared<'_>) -> AppInfo {
         identifier: app.config().identifier.clone(),
         kdeconnect_protocol: pixel_connect_kdeconnect::PROTOCOL_VERSION,
         quickshare_service: true,
-        clipboard_backend: crate::clipboard::ClipboardMechanism::detect().label().to_string(),
-        filemanager_socket: crate::nautilus::socket_path()
-            .to_string_lossy()
+        clipboard_backend: crate::clipboard::ClipboardMechanism::detect()
+            .label()
             .to_string(),
+        filemanager_socket: crate::nautilus::socket_path().to_string_lossy().to_string(),
     }
 }
 
@@ -189,9 +189,7 @@ pub async fn kde_devices(kdc: Kdc<'_>) -> Result<Vec<pixel_connect_kdeconnect::K
 }
 
 #[tauri::command]
-pub async fn kde_device_info(
-    kdc: Kdc<'_>,
-) -> Result<pixel_connect_kdeconnect::DeviceInfo, String> {
+pub async fn kde_device_info(kdc: Kdc<'_>) -> Result<pixel_connect_kdeconnect::DeviceInfo, String> {
     Ok(crate::kdc::device_info(kdc.inner()).await)
 }
 
@@ -203,41 +201,43 @@ pub async fn kde_refresh(kdc: Kdc<'_>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn kde_request_pairing(kdc: Kdc<'_>, device_id: String) -> Result<(), String> {
-    crate::kdc::request_pairing(kdc.inner(), &device_id).await
+    crate::kdc::request_pairing(kdc.inner(), &device_id)
+        .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn kde_accept_pairing(kdc: Kdc<'_>, device_id: String) -> Result<(), String> {
-    crate::kdc::accept_pairing(kdc.inner(), &device_id).await
+    crate::kdc::accept_pairing(kdc.inner(), &device_id)
+        .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn kde_reject_pairing(kdc: Kdc<'_>, device_id: String) -> Result<(), String> {
-    crate::kdc::reject_pairing(kdc.inner(), &device_id).await
+    crate::kdc::reject_pairing(kdc.inner(), &device_id)
+        .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn kde_unpair(kdc: Kdc<'_>, device_id: String) -> Result<bool, String> {
-    crate::kdc::unpair(kdc.inner(), &device_id).await
+    crate::kdc::unpair(kdc.inner(), &device_id)
+        .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn kde_ping(kdc: Kdc<'_>, device_id: String, message: String) -> Result<(), String> {
-    crate::kdc::ping(kdc.inner(), &device_id, &message).await
+    crate::kdc::ping(kdc.inner(), &device_id, &message)
+        .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn kde_share_text(
-    kdc: Kdc<'_>,
-    device_id: String,
-    text: String,
-) -> Result<(), String> {
-    crate::kdc::share_text(kdc.inner(), &device_id, &text).await
+pub async fn kde_share_text(kdc: Kdc<'_>, device_id: String, text: String) -> Result<(), String> {
+    crate::kdc::share_text(kdc.inner(), &device_id, &text)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -248,7 +248,8 @@ pub async fn kde_share_files(
     paths: Vec<String>,
 ) -> Result<usize, String> {
     let parsed = resolve_local_paths(&paths)?;
-    crate::kdc::share_files(kdc.inner(), &device_id, parsed).await
+    crate::kdc::share_files(kdc.inner(), &device_id, parsed)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -262,7 +263,8 @@ pub async fn kde_share_directory(
     if !dir.is_dir() {
         return Err(format!("{} is not a directory", dir.display()));
     }
-    crate::kdc::share_directory(kdc.inner(), &device_id, dir).await
+    crate::kdc::share_directory(kdc.inner(), &device_id, dir)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -289,7 +291,8 @@ pub async fn kde_send_notification_action(
     key: String,
     action: String,
 ) -> Result<(), String> {
-    crate::kdc::notification_action(kdc.inner(), &device_id, &key, &action).await
+    crate::kdc::notification_action(kdc.inner(), &device_id, &key, &action)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -319,7 +322,8 @@ pub async fn kde_clear_notifications(kdc: Kdc<'_>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn kde_request_clipboard(kdc: Kdc<'_>) -> Result<usize, String> {
-    crate::kdc::request_clipboard(kdc.inner()).await
+    crate::kdc::request_clipboard(kdc.inner())
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -342,14 +346,19 @@ pub async fn kde_set_clipboard_auto_share(
 
 #[tauri::command]
 pub async fn kde_set_device_name(app: AppHandle, kdc: Kdc<'_>, name: String) -> Result<(), String> {
-    crate::kdc::set_device_name(kdc.inner(), &name).await
+    crate::kdc::set_device_name(kdc.inner(), &name)
+        .await
         .map_err(|e| e.to_string())?;
     crate::settings::set(&app, "kde_device_name", serde_json::json!(name));
     Ok(())
 }
 
 #[tauri::command]
-pub async fn kde_set_incoming_path(app: AppHandle, kdc: Kdc<'_>, path: String) -> Result<(), String> {
+pub async fn kde_set_incoming_path(
+    app: AppHandle,
+    kdc: Kdc<'_>,
+    path: String,
+) -> Result<(), String> {
     let path = PathBuf::from(path);
     tokio::fs::create_dir_all(&path)
         .await
@@ -448,8 +457,12 @@ pub async fn scrcpy_launch(
     serial: String,
     args: Option<Vec<String>>,
 ) -> Result<crate::adb::ScrcpyLaunch, String> {
-    crate::adb::launch_scrcpy(state.inner().adb.as_ref(), &serial, args.as_deref().unwrap_or(&[]))
-        .await
+    crate::adb::launch_scrcpy(
+        state.inner().adb.as_ref(),
+        &serial,
+        args.as_deref().unwrap_or(&[]),
+    )
+    .await
 }
 
 #[tauri::command]

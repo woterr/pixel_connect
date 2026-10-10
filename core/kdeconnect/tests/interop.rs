@@ -15,9 +15,9 @@
 use std::time::Duration;
 
 use pixel_connect_kdeconnect::lan::KcEvent;
+use pixel_connect_kdeconnect::tls::{TlsContext, TlsRole};
 use pixel_connect_kdeconnect::types::TransferProgress;
 use pixel_connect_kdeconnect::KdeConnectService;
-use pixel_connect_kdeconnect::tls::{TlsContext, TlsRole};
 use pixel_connect_kdeconnect::PROTOCOL_VERSION;
 
 mod support;
@@ -79,7 +79,8 @@ async fn commands_for_unconnected_devices_fail_clearly() -> anyhow::Result<()> {
     let (svc, _rx) = KdeConnectService::start(&dir).await?;
     for e in [
         svc.ping("0123456789abcdef0123456789abcdef", "hi").await,
-        svc.request_pairing("0123456789abcdef0123456789abcdef").await,
+        svc.request_pairing("0123456789abcdef0123456789abcdef")
+            .await,
     ] {
         let err = e.unwrap_err();
         assert!(
@@ -136,9 +137,11 @@ async fn tls_handshake_works_in_both_roles_with_cn_pinning() -> anyhow::Result<(
     // A wrong expected id is rejected…
     assert!(client.verify_peer("not-the-device-id", None).is_err());
     // … and so is the wrong pinned certificate, while the correct one passes.
-    assert!(client.verify_peer(&id_a, Some(b"not-a-certificate")).is_err());
     assert!(client
-        .verify_peer(&id_a, Some(&cfg_a.certificate_der().to_vec()))
+        .verify_peer(&id_a, Some(b"not-a-certificate"))
+        .is_err());
+    assert!(client
+        .verify_peer(&id_a, Some(cfg_a.certificate_der()))
         .is_ok());
 
     Ok(())
@@ -162,8 +165,9 @@ async fn two_services_open_a_link_and_exchange_data() -> anyhow::Result<()> {
     assert_ne!(id_a, id_b);
 
     // Seed the peer exactly as a discovery round would.
-    let mut identity =
-        pixel_connect_kdeconnect::NetworkPacket::new(pixel_connect_kdeconnect::packet::PACKET_TYPE_IDENTITY);
+    let mut identity = pixel_connect_kdeconnect::NetworkPacket::new(
+        pixel_connect_kdeconnect::packet::PACKET_TYPE_IDENTITY,
+    );
     identity.set("deviceId", id_a.clone());
     identity.set("deviceName", "Peer A");
     identity.set("protocolVersion", PROTOCOL_VERSION);
@@ -215,8 +219,14 @@ async fn complete_exchange(
         svc_a.provider().is_connected(id_b).await
     })
     .await;
-    assert!(b_saw_a, "the dialling side never registered the device link");
-    assert!(a_saw_b, "the accepting side never registered the device link");
+    assert!(
+        b_saw_a,
+        "the dialling side never registered the device link"
+    );
+    assert!(
+        a_saw_b,
+        "the accepting side never registered the device link"
+    );
 
     // The accepting side learned the peer's name from the identity packet that
     // travels inside TLS.
@@ -249,7 +259,10 @@ async fn complete_exchange(
                 device,
                 verification_key: key,
             }) => {
-                assert_eq!(device.id, id_b, "the pairing request came from the wrong device");
+                assert_eq!(
+                    device.id, id_b,
+                    "the pairing request came from the wrong device"
+                );
                 assert_eq!(key.len(), 8, "the verification key must be 8 characters");
                 verification_key = key;
             }
@@ -303,12 +316,14 @@ async fn complete_exchange(
     let bytes: Vec<u8> = (0..(512 * 1024u32)).map(|i| (i % 251) as u8).collect();
     std::fs::write(&payload, &bytes)?;
 
-    svc_b.share_files(id_a, &[payload.clone()], false).await?;
+    svc_b
+        .share_files(id_a, std::slice::from_ref(&payload), false)
+        .await?;
 
     let mut landed: Option<std::path::PathBuf> = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while std::time::Instant::now() < deadline && landed.is_none() {
-        landed = find_with_extension(&incoming, "bin");
+        landed = find_with_extension(incoming, "bin");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let landed = landed.expect("the shared file never arrived");
@@ -417,11 +432,13 @@ async fn cancelling_a_transfer_is_honoured_and_reports_honestly() -> anyhow::Res
         "cancelling an unknown transfer must report failure"
     );
 
-    let payload = std::env::temp_dir()
-        .join(format!("pixel-connect-cancel-{}.bin", std::process::id()));
+    let payload =
+        std::env::temp_dir().join(format!("pixel-connect-cancel-{}.bin", std::process::id()));
     std::fs::write(&payload, vec![7u8; 8 * 1024 * 1024])?;
 
-    svc_b.share_files(&id_a, &[payload.clone()], false).await?;
+    svc_b
+        .share_files(&id_a, std::slice::from_ref(&payload), false)
+        .await?;
 
     // As soon as the transfer registers, cancel it.
     let mut cancelled = false;
@@ -451,7 +468,11 @@ async fn cancelling_a_transfer_is_honoured_and_reports_honestly() -> anyhow::Res
             "a cancelled transfer stayed in the registry"
         );
         // And a second cancel must then refuse, rather than claiming success.
-        let id = format!("{}:out:{}", id_b, payload.file_name().unwrap().to_string_lossy());
+        let id = format!(
+            "{}:out:{}",
+            id_b,
+            payload.file_name().unwrap().to_string_lossy()
+        );
         assert!(
             !svc_b.cancel_transfer(&id),
             "cancelling a finished transfer must report failure"
@@ -482,8 +503,7 @@ async fn cancelling_a_transfer_is_honoured_and_reports_honestly() -> anyhow::Res
                 t.bytes, t.total
             );
             // And the file on disk must match.
-            let landed =
-                find_with_extension(&incoming, "bin").expect("the completed file");
+            let landed = find_with_extension(&incoming, "bin").expect("the completed file");
             assert_eq!(std::fs::metadata(&landed).unwrap().len(), 8 * 1024 * 1024);
             let _ = std::fs::remove_file(&landed);
         }

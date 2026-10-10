@@ -97,7 +97,14 @@ pub fn note_udp_peer(from: IpAddr, packet: &crate::packet::NetworkPacket) {
     if !crate::deviceinfo::is_valid_device_id(&id) {
         return;
     }
-    if Some(&from) == registry().lock().unwrap().peers.get(&id).map(|p| &p.address) {
+    if Some(&from)
+        == registry()
+            .lock()
+            .unwrap()
+            .peers
+            .get(&id)
+            .map(|p| &p.address)
+    {
         return;
     }
     let _ = upsert(DiscoveredPeer {
@@ -132,7 +139,11 @@ pub fn note_mdns_peer(
         name: txt.get("name").cloned().unwrap_or_default(),
         device_type: txt.get("type").cloned(),
         protocol_version: protocol,
-        tcp_port: if port == 0 { crate::lan::MIN_TCP_PORT } else { port },
+        tcp_port: if port == 0 {
+            crate::lan::MIN_TCP_PORT
+        } else {
+            port
+        },
         address,
         source: "mdns",
     });
@@ -198,7 +209,12 @@ mod tests {
         txt.insert("name".to_string(), "Pixel".to_string());
         txt.insert("type".to_string(), "phone".to_string());
         txt.insert("protocol".to_string(), "8".to_string());
-        note_mdns_peer(Some("192.168.1.9".parse().unwrap()), 1716, "x._kdeconnect._udp.local", &txt);
+        note_mdns_peer(
+            Some("192.168.1.9".parse().unwrap()),
+            1716,
+            "x._kdeconnect._udp.local",
+            &txt,
+        );
         let peer = target(&"a".repeat(32)).unwrap();
         assert_eq!(peer.tcp_port, 1716);
         assert_eq!(peer.protocol_version, 8);

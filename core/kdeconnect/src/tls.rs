@@ -92,11 +92,7 @@ impl TlsContext {
     }
 
     /// Perform the TLS handshake in the requested role.
-    pub async fn handshake<S>(
-        &self,
-        role: TlsRole,
-        stream: S,
-    ) -> Result<TlsStream<S>>
+    pub async fn handshake<S>(&self, role: TlsRole, stream: S) -> Result<TlsStream<S>>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
@@ -104,10 +100,9 @@ impl TlsContext {
         match role {
             TlsRole::Client => {
                 let connector = tokio_rustls::TlsConnector::from(self.client_config.clone());
-                let name = rustls::pki_types::ServerName::try_from(
-                    crate::config::DEFAULT_TLS_SERVER_NAME,
-                )
-                .map_err(|e| anyhow!("invalid SNI name: {e}"))?;
+                let name =
+                    rustls::pki_types::ServerName::try_from(crate::config::DEFAULT_TLS_SERVER_NAME)
+                        .map_err(|e| anyhow!("invalid SNI name: {e}"))?;
                 let s = tokio::time::timeout(timeout, connector.connect(name, stream))
                     .await
                     .map_err(|_| anyhow!("TLS handshake timed out"))?

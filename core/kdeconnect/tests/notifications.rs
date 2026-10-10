@@ -37,9 +37,7 @@ fn parse_notification(np: &NetworkPacket) -> ParsedNotification {
         app_name: np.get_str("appName").unwrap_or_default(),
         timestamp,
         actions,
-        request_reply_id: np
-            .get_str("requestReplyId")
-            .filter(|s| !s.is_empty()),
+        request_reply_id: np.get_str("requestReplyId").filter(|s| !s.is_empty()),
         is_clearable: np.body.get_bool("isClearable").unwrap_or(true),
         silent: np.body.get_bool("silent").unwrap_or(false),
     }

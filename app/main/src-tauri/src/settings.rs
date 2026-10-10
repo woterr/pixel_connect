@@ -75,12 +75,18 @@ pub fn load(app: &AppHandle) -> Settings {
     let s = store(app);
     let d = Settings::default();
     Settings {
-        realclose: s.get("realclose").and_then(|v| v.as_bool()).unwrap_or(d.realclose),
+        realclose: s
+            .get("realclose")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(d.realclose),
         startminimized: s
             .get("startminimized")
             .and_then(|v| v.as_bool())
             .unwrap_or(d.startminimized),
-        autostart: s.get("autostart").and_then(|v| v.as_bool()).unwrap_or(d.autostart),
+        autostart: s
+            .get("autostart")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(d.autostart),
         visibility: s
             .get("visibility")
             .and_then(|v| v.as_u64())

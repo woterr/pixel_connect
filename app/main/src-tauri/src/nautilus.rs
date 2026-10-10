@@ -13,8 +13,8 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
 use std::sync::Arc;
+use tauri::{AppHandle, Manager};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -98,10 +98,7 @@ pub async fn accept_loop(app: AppHandle) {
 }
 
 /// Acknowledge a `ping` so the extension can report a healthy backend.
-pub async fn handle_client(
-    stream: UnixStream,
-    app: tauri::AppHandle,
-) -> anyhow::Result<()> {
+pub async fn handle_client(stream: UnixStream, app: tauri::AppHandle) -> anyhow::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
@@ -272,9 +269,7 @@ async fn resolve_device(
     paired
         .first()
         .map(|d| d.id.clone())
-        .ok_or_else(|| {
-            "No paired Pixel is available. Pair one in Pixel Connect first.".to_string()
-        })
+        .ok_or_else(|| "No paired Pixel is available. Pair one in Pixel Connect first.".to_string())
 }
 
 pub fn parse_local_path(raw: &str) -> Option<PathBuf> {

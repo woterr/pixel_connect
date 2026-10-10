@@ -15,9 +15,9 @@
 //
 // UDP broadcast and mDNS live in `discovery.rs`.
 
+use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use arc_swap::ArcSwap;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -169,12 +169,7 @@ impl LanLinkProvider {
             let cert = cfg.certificate_pem().to_string();
             let key = cfg.identity().key_pem.clone();
             let tls_ctx = TlsContext::new(&cert, &key).context("build TLS context")?;
-            (
-                info,
-                tls_ctx,
-                Arc::<str>::from(cert),
-                Arc::<str>::from(key),
-            )
+            (info, tls_ctx, Arc::<str>::from(cert), Arc::<str>::from(key))
         };
 
         let incoming = dirs::download_dir()
@@ -477,7 +472,6 @@ impl LanLinkProvider {
         drop(devices);
         let _ = self.events.send(KcEvent::Device(Box::new(device)));
     }
-
 }
 
 /// State shared with every device link task.
@@ -523,7 +517,13 @@ async fn sleep_until_cancelled(shutdown: Arc<AtomicBool>) {
 fn sanitize_hostname(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let cleaned = cleaned.trim_matches('-').to_string();
     if cleaned.is_empty() {
@@ -683,16 +683,7 @@ async fn handle_outgoing(
     let id = info.id.clone();
 
     crate::link::run_link(
-        tls_stream,
-        id,
-        name,
-        version,
-        peer_addr,
-        ctx,
-        devices,
-        links,
-        events,
-        trusted,
+        tls_stream, id, name, version, peer_addr, ctx, devices, links, events, trusted,
     )
     .await
 }
@@ -731,10 +722,7 @@ pub fn capabilities_outgoing() -> Vec<String> {
     ]
 }
 
-async fn udp_discovery_loop(
-    socket: UdpSocket,
-    identity: Arc<DeviceInfo>,
-) -> Result<()> {
+async fn udp_discovery_loop(socket: UdpSocket, identity: Arc<DeviceInfo>) -> Result<()> {
     let mut buf = vec![0u8; 64 * 1024];
     let mut ticker = tokio::time::interval(IDENTITY_BROADCAST_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -769,7 +757,6 @@ async fn mdns_loop(_ctx: Arc<LinkContext>, identity: Arc<DeviceInfo>) -> Result<
 
     let device_info = identity.as_ref().clone();
 
-
     // KDE Connect announces `_kdeconnect._udp` with the instance name set to
     // the device id and TXT records id/name/type/protocol
     // (kdeconnect-kde `core/backends/lan/avahidiscovery.cpp`).
@@ -777,7 +764,10 @@ async fn mdns_loop(_ctx: Arc<LinkContext>, identity: Arc<DeviceInfo>) -> Result<
     let properties: HashMap<String, String> = HashMap::from([
         ("id".to_string(), device_info.id.clone()),
         ("name".to_string(), device_info.name.clone()),
-        ("type".to_string(), device_info.device_type.as_str().to_string()),
+        (
+            "type".to_string(),
+            device_info.device_type.as_str().to_string(),
+        ),
         ("protocol".to_string(), PROTOCOL_VERSION.to_string()),
     ]);
     // `mdns-sd` validates both the service type and the hostname, so both need
@@ -818,9 +808,7 @@ async fn mdns_loop(_ctx: Arc<LinkContext>, identity: Arc<DeviceInfo>) -> Result<
             Ok(ServiceEvent::ServiceResolved(info)) => {
                 debug!("mDNS: resolved {}", info.get_fullname());
                 // TXT records are `id`, `name`, `type`, `protocol`.
-                let get = |k: &str| {
-                    info.get_property_val_str(k).map(|s| s.to_string())
-                };
+                let get = |k: &str| info.get_property_val_str(k).map(|s| s.to_string());
                 let txt: HashMap<String, String> = [
                     ("id", get("id")),
                     ("name", get("name")),
@@ -836,7 +824,12 @@ async fn mdns_loop(_ctx: Arc<LinkContext>, identity: Arc<DeviceInfo>) -> Result<
                     .find(|a| a.is_ipv4())
                     .copied()
                     .or_else(|| info.get_addresses().iter().next().copied());
-                crate::discovery::note_mdns_peer(address, info.get_port(), info.get_fullname(), &txt);
+                crate::discovery::note_mdns_peer(
+                    address,
+                    info.get_port(),
+                    info.get_fullname(),
+                    &txt,
+                );
             }
             Ok(ServiceEvent::SearchStarted(_)) => {
                 debug!("mDNS: browsing for {MDNS_SERVICE_TYPE}");

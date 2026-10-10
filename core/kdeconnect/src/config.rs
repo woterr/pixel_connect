@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::{certificate_der_from_pem, generate_device_id, generate_identity, DeviceIdentity};
+use crate::crypto::{
+    certificate_der_from_pem, generate_device_id, generate_identity, DeviceIdentity,
+};
 use crate::deviceinfo::{sanitize_device_name, DeviceInfo, DeviceType};
 use crate::packet::PROTOCOL_VERSION;
 
@@ -48,12 +50,6 @@ pub struct Settings {
     pub device_type: DeviceType,
     #[serde(rename = "incomingPath", default)]
     pub incoming_path: Option<PathBuf>,
-}
-
-impl Default for DeviceType {
-    fn default() -> Self {
-        DeviceType::Desktop
-    }
 }
 
 pub struct KdeConnectConfig {
@@ -143,7 +139,10 @@ impl KdeConnectConfig {
     }
 
     fn save_identity(&self) -> Result<()> {
-        write_private(&self.dir.join("certificate.pem"), self.identity.cert_pem.as_bytes())?;
+        write_private(
+            &self.dir.join("certificate.pem"),
+            self.identity.cert_pem.as_bytes(),
+        )?;
         write_private(&self.dir.join("key.pem"), self.identity.key_pem.as_bytes())
     }
 

@@ -47,7 +47,12 @@ async fn resolves_kde_connect_services_on_the_network() -> anyhow::Result<()> {
             "{} has an invalid device id",
             p.device_id
         );
-        assert!((1716..=1764).contains(&p.tcp_port), "{} advertises port {}", p.device_id, p.tcp_port);
+        assert!(
+            (1716..=1764).contains(&p.tcp_port),
+            "{} advertises port {}",
+            p.device_id,
+            p.tcp_port
+        );
     }
     Ok(())
 }

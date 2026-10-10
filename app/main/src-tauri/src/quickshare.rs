@@ -121,10 +121,7 @@ pub fn set_download_path(state: &Arc<crate::AppState>, path: Option<PathBuf>) {
     state.quickshare.lock().unwrap().set_download_path(path);
 }
 
-pub async fn send_payload(
-    state: &Arc<crate::AppState>,
-    payload: SendInfo,
-) -> Result<(), String> {
+pub async fn send_payload(state: &Arc<crate::AppState>, payload: SendInfo) -> Result<(), String> {
     state
         .send_sender
         .send(payload)

@@ -71,12 +71,34 @@ pub fn validate(target: &SshTarget) -> Result<(), String> {
         return Err("host is required".into());
     }
     if target.host.len() > 253
-        || target
-            .host
-            .chars()
-            .any(|c| c.is_whitespace() || matches!(c, '\0' | ';' | '&' | '|' | '$' | '`' | '<' | '>' | '\'' | '"' | '(' | ')' | '*' | '?' | '[' | ']' | '#' | '~'))
+        || target.host.chars().any(|c| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '\0' | ';'
+                        | '&'
+                        | '|'
+                        | '$'
+                        | '`'
+                        | '<'
+                        | '>'
+                        | '\''
+                        | '"'
+                        | '('
+                        | ')'
+                        | '*'
+                        | '?'
+                        | '['
+                        | ']'
+                        | '#'
+                        | '~'
+                )
+        })
     {
-        return Err(format!("host contains invalid characters: {:?}", target.host));
+        return Err(format!(
+            "host contains invalid characters: {:?}",
+            target.host
+        ));
     }
     if target.username.is_empty() {
         return Err("username is required".into());
@@ -98,10 +120,11 @@ pub fn validate(target: &SshTarget) -> Result<(), String> {
     Ok(())
 }
 
-/// The exact argument vector used for a non-interactive connectivity check.
+/// The exact argument vector for a non-interactive connectivity check.
 ///
-/// Exposed so the shape of the command can be asserted in tests: no shell is
-/// involved and the remote command is always the literal `true`.
+/// No shell is involved and the remote command is always the literal `true`.
+/// Used by the tests to pin the shape of the command, and by `probe` so the
+/// user is told exactly what would be run.
 pub fn probe_args(target: &SshTarget) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
@@ -146,6 +169,7 @@ pub async fn probe(target: &SshTarget) -> SshProbe {
         };
     };
 
+    // Report the client version first, which also proves the binary runs.
     match Command::new(&ssh)
         .arg("-V")
         .stderr(Stdio::piped())
@@ -154,11 +178,17 @@ pub async fn probe(target: &SshTarget) -> SshProbe {
     {
         Ok(out) => {
             let version = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            // Spelling out the command is more useful than a bare "ok", and it
+            // makes the fact that nothing has connected yet obvious.
+            let command = format!("ssh {}", probe_args(target).join(" "));
             SshProbe {
                 target_id: id,
                 available: true,
                 version: Some(version),
-                message: "OpenSSH client is available. No connection was attempted.".into(),
+                message: format!(
+                    "The OpenSSH client is available. Nothing has been contacted yet; \
+                     connecting would run: {command}"
+                ),
             }
         }
         Err(e) => SshProbe {
@@ -290,5 +320,4 @@ mod tests {
         // re-split.
         assert!(!args.contains(&"192.168.1.42".to_string()));
     }
-
 }

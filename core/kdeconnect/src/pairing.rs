@@ -172,7 +172,12 @@ impl PairingHandler {
                 // re-requested (upstream drops us back to NotPaired first).
                 if timestamp.is_some() {
                     self.state = PairState::NotPaired;
-                    return self.handle_packet(packet, trusted, our_public_key_der, their_public_key_der);
+                    return self.handle_packet(
+                        packet,
+                        trusted,
+                        our_public_key_der,
+                        their_public_key_der,
+                    );
                 }
                 PairingAction::PeerAccepted
             }
@@ -220,8 +225,10 @@ impl PairingHandler {
     }
 
     pub fn has_timed_out(&self, started_at: std::time::Instant) -> bool {
-        matches!(self.state, PairState::Requested | PairState::RequestedByPeer)
-            && started_at.elapsed() > std::time::Duration::from_secs(PAIRING_TIMEOUT_SECS)
+        matches!(
+            self.state,
+            PairState::Requested | PairState::RequestedByPeer
+        ) && started_at.elapsed() > std::time::Duration::from_secs(PAIRING_TIMEOUT_SECS)
     }
 }
 
@@ -257,7 +264,9 @@ mod tests {
         let now = now_secs();
         let action = h.handle_packet(&request_packet(now), false, OUR, THEIR);
         match action {
-            PairingAction::IncomingRequest { verification_key, .. } => {
+            PairingAction::IncomingRequest {
+                verification_key, ..
+            } => {
                 assert_eq!(verification_key.len(), 8);
             }
             other => panic!("unexpected {other:?}"),

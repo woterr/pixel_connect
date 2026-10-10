@@ -80,10 +80,15 @@ fn rotate(dir: &Path, name: &str, max_bytes: u128) -> Result<PathBuf, anyhow::Er
     if path.exists() {
         let size = File::open(&path)?.metadata()?.len() as u128;
         if size > max_bytes {
+            // `parse_borrowed` avoids the deprecated owned `parse`, which
+            // allocates a fresh format description on every log rotation.
             let stamp = OffsetDateTime::now_utc()
-                .format(&time::format_description::parse(
-                    "[year]-[month]-[day]_[hour]-[minute]-[second]",
-                ).expect("valid format string"))
+                .format(
+                    &time::format_description::parse_borrowed::<2>(
+                        "[year]-[month]-[day]_[hour]-[minute]-[second]",
+                    )
+                    .expect("the format string is valid"),
+                )
                 .expect("a timestamp always formats");
             let archived = dir.join(format!("{name}_{stamp}.log"));
             if archived.exists() {

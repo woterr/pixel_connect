@@ -89,11 +89,19 @@ mod tests {
 
         let mut r = LineReader::new(std::io::Cursor::new(buf));
         assert_eq!(
-            r.read_packet(MAX_PACKET_SIZE).await.unwrap().get_str("message").unwrap(),
+            r.read_packet(MAX_PACKET_SIZE)
+                .await
+                .unwrap()
+                .get_str("message")
+                .unwrap(),
             "hi"
         );
         assert_eq!(
-            r.read_packet(MAX_PACKET_SIZE).await.unwrap().get_str("message").unwrap(),
+            r.read_packet(MAX_PACKET_SIZE)
+                .await
+                .unwrap()
+                .get_str("message")
+                .unwrap(),
             "there"
         );
         assert!(r.read_packet(MAX_PACKET_SIZE).await.is_err());

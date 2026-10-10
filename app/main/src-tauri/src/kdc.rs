@@ -189,7 +189,11 @@ async fn handle_event(app: &AppHandle, state: &Arc<KdcState>, event: KcEvent) ->
             notification_id,
         } => {
             let qualified = format!("{device_id}:{notification_id}");
-            state.notifications.lock().await.retain(|e| e.id != qualified);
+            state
+                .notifications
+                .lock()
+                .await
+                .retain(|e| e.id != qualified);
             let _ = app.emit("kdeconnect:notification_replied", qualified);
         }
         KcEvent::Connectivity(c) => {
@@ -224,13 +228,11 @@ async fn handle_event(app: &AppHandle, state: &Arc<KdcState>, event: KcEvent) ->
         KcEvent::TransferProgress(t) => {
             let _ = app.emit("kdeconnect:transfer", *t);
         }
-        KcEvent::Log { level, message } => {
-            match level.as_str() {
-                "error" => log::error!("kdeconnect: {message}"),
-                "warn" => log::warn!("kdeconnect: {message}"),
-                _ => log::info!("kdeconnect: {message}"),
-            }
-        }
+        KcEvent::Log { level, message } => match level.as_str() {
+            "error" => log::error!("kdeconnect: {message}"),
+            "warn" => log::warn!("kdeconnect: {message}"),
+            _ => log::info!("kdeconnect: {message}"),
+        },
     }
     Ok(())
 }
@@ -270,11 +272,7 @@ pub async fn share_text(state: &KdcState, device_id: &str, text: &str) -> Result
     svc.share_text(device_id, text).await
 }
 
-pub async fn share_files(
-    state: &KdcState,
-    device_id: &str,
-    paths: Vec<PathBuf>,
-) -> Result<usize> {
+pub async fn share_files(state: &KdcState, device_id: &str, paths: Vec<PathBuf>) -> Result<usize> {
     let svc = state.service.lock().await;
     svc.share_files(device_id, &paths, false).await
 }

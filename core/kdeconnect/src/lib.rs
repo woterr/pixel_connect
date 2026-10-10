@@ -24,8 +24,8 @@ pub mod link;
 pub mod packet;
 pub mod pairing;
 pub mod tls;
-pub mod transport;
 pub mod tls_verify;
+pub mod transport;
 pub mod types;
 
 use std::path::{Path, PathBuf};
@@ -38,10 +38,12 @@ pub use cancel::CancelToken;
 pub use config::KdeConnectConfig;
 pub use deviceinfo::{DeviceInfo, DeviceType};
 pub use lan::{KcEvent, LanLinkProvider, LinkCommand, RuntimeSettings};
-pub use tls::{TlsContext, TlsRole};
 pub use packet::{NetworkPacket, PROTOCOL_VERSION};
+pub use tls::{TlsContext, TlsRole};
 pub use transport::{Transport, TransportState, TransportStatus};
-pub use types::{ConnectivityReport, KcDevice, LinkState, RemoteNotification, ShareOffer, TransferProgress};
+pub use types::{
+    ConnectivityReport, KcDevice, LinkState, RemoteNotification, ShareOffer, TransferProgress,
+};
 
 /// Number of buffered events before slow receivers start losing them.
 const EVENT_BUFFER: usize = 256;
@@ -77,7 +79,10 @@ impl KdeConnectService {
                 .get("clipboardAutoShare")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            provider.settings.clipboard_enabled.store(enabled, std::sync::atomic::Ordering::SeqCst);
+            provider
+                .settings
+                .clipboard_enabled
+                .store(enabled, std::sync::atomic::Ordering::SeqCst);
             provider
                 .settings
                 .auto_clipboard
@@ -174,12 +179,19 @@ impl KdeConnectService {
             }
             let mut np = NetworkPacket::new(packet::PACKET_TYPE_CLIPBOARD);
             np.set("content", content.clone());
-            if self.command(&device.id, LinkCommand::Send(Box::new(np))).await.is_ok() {
+            if self
+                .command(&device.id, LinkCommand::Send(Box::new(np)))
+                .await
+                .is_ok()
+            {
                 sent += 1;
             }
         }
         // Deliberately not logged: clipboard contents are private.
-        info!("broadcast clipboard text to {sent} device(s) ({} bytes)", content.len());
+        info!(
+            "broadcast clipboard text to {sent} device(s) ({} bytes)",
+            content.len()
+        );
         Ok(sent)
     }
 
@@ -199,7 +211,11 @@ impl KdeConnectService {
             }
             let mut np = NetworkPacket::new(packet::PACKET_TYPE_CLIPBOARD_CONNECT);
             np.set("timestamp", config::now_millis());
-            if self.command(&device.id, LinkCommand::Send(Box::new(np))).await.is_ok() {
+            if self
+                .command(&device.id, LinkCommand::Send(Box::new(np)))
+                .await
+                .is_ok()
+            {
                 asked += 1;
             }
         }
@@ -220,11 +236,8 @@ impl KdeConnectService {
             let file = tokio::fs::File::open(path)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-            self.command(
-                device_id,
-                LinkCommand::SendWithPayload(Box::new(np), file),
-            )
-            .await?;
+            self.command(device_id, LinkCommand::SendWithPayload(Box::new(np), file))
+                .await?;
             queued += 1;
         }
         Ok(queued)
@@ -272,7 +285,8 @@ impl KdeConnectService {
     pub async fn ping(&self, device_id: &str, message: &str) -> Result<()> {
         let mut np = NetworkPacket::new(packet::PACKET_TYPE_PING);
         np.set("message", message);
-        self.command(device_id, LinkCommand::Send(Box::new(np))).await
+        self.command(device_id, LinkCommand::Send(Box::new(np)))
+            .await
     }
 
     pub async fn request_pairing(&self, device_id: &str) -> Result<()> {
@@ -291,14 +305,18 @@ impl KdeConnectService {
     ///
     /// `kdeconnect.notification.action` carries the notification `key` and the
     /// action `action`; note the key is `action`, not `actionId`.
-    pub async fn notification_action(&self, device_id: &str, key: &str, action: &str) -> Result<()> {
-        let raw_key = key
-            .strip_prefix(&format!("{device_id}:"))
-            .unwrap_or(key);
+    pub async fn notification_action(
+        &self,
+        device_id: &str,
+        key: &str,
+        action: &str,
+    ) -> Result<()> {
+        let raw_key = key.strip_prefix(&format!("{device_id}:")).unwrap_or(key);
         let mut np = NetworkPacket::new(packet::PACKET_TYPE_NOTIFICATION_ACTION);
         np.set("key", raw_key);
         np.set("action", action);
-        self.command(device_id, LinkCommand::Send(Box::new(np))).await
+        self.command(device_id, LinkCommand::Send(Box::new(np)))
+            .await
     }
 
     /// Send a typed reply to a repliable notification.

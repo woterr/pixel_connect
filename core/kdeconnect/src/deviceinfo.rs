@@ -4,8 +4,8 @@
 // `DeviceInfo.kt`. Licensed upstream as GPL-2.0-only OR GPL-3.0-only OR
 // LicenseRef-KDE-Accepted-GPL; see ../NOTICE.md.
 
-use crate::packet::{Capabilities, NetworkPacket, PacketBody, PACKET_TYPE_IDENTITY};
 pub use crate::packet::PROTOCOL_VERSION;
+use crate::packet::{Capabilities, NetworkPacket, PacketBody, PACKET_TYPE_IDENTITY};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -13,10 +13,13 @@ use ts_rs::TS;
 /// identity packet that does not match this, so we must emit a conforming one.
 const DEVICE_ID_LEN: (usize, usize) = (32, 38);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(rename_all = "lowercase")]
 pub enum DeviceType {
+    /// A generic desktop is the safe default: it matches the widest set of
+    /// KDE Connect peers and advertises no capabilities we have not checked.
+    #[default]
     Desktop,
     Laptop,
     Phone,
@@ -88,7 +91,11 @@ impl DeviceInfo {
         np
     }
 
-    pub fn to_connection_packet(&self, target_device_id: &str, target_protocol_version: i64) -> NetworkPacket {
+    pub fn to_connection_packet(
+        &self,
+        target_device_id: &str,
+        target_protocol_version: i64,
+    ) -> NetworkPacket {
         let mut np = NetworkPacket::new(PACKET_TYPE_IDENTITY);
         np.set("deviceId", &self.id);
         np.set("deviceName", &self.name);
@@ -149,8 +156,14 @@ impl DeviceInfo {
             .and_then(|t| DeviceType::parse(&t))
             .unwrap_or(DeviceType::Desktop);
 
-        let incoming_capabilities = np.body.get_array("incomingCapabilities").unwrap_or_default();
-        let outgoing_capabilities = np.body.get_array("outgoingCapabilities").unwrap_or_default();
+        let incoming_capabilities = np
+            .body
+            .get_array("incomingCapabilities")
+            .unwrap_or_default();
+        let outgoing_capabilities = np
+            .body
+            .get_array("outgoingCapabilities")
+            .unwrap_or_default();
 
         Ok(DeviceInfo {
             id,
@@ -190,7 +203,12 @@ pub fn is_valid_device_id(id: &str) -> bool {
 pub fn sanitize_device_name(raw: &str) -> String {
     let filtered: String = raw
         .chars()
-        .filter(|c| !matches!(c, '"' | '\'' | ',' | ';' | ':' | '.' | '!' | '?' | '(' | ')' | '[' | ']' | '<' | '>'))
+        .filter(|c| {
+            !matches!(
+                c,
+                '"' | '\'' | ',' | ';' | ':' | '.' | '!' | '?' | '(' | ')' | '[' | ']' | '<' | '>'
+            )
+        })
         .take(32)
         .collect();
     if filtered.is_empty() {
@@ -207,12 +225,17 @@ pub fn connection_packet_target(np: &NetworkPacket) -> Option<(String, i64)> {
         return None;
     }
     let target = np.get_str("targetDeviceId")?;
-    let version = np.body.get_i64("targetProtocolVersion").unwrap_or(PROTOCOL_VERSION);
+    let version = np
+        .body
+        .get_i64("targetProtocolVersion")
+        .unwrap_or(PROTOCOL_VERSION);
     Some((target, version))
 }
 
 pub fn discovery_packet_port(np: &NetworkPacket) -> Option<u16> {
-    np.body.get_i64("tcpPort").and_then(|p| u16::try_from(p).ok())
+    np.body
+        .get_i64("tcpPort")
+        .and_then(|p| u16::try_from(p).ok())
 }
 
 pub fn identity_body_summary(np: &NetworkPacket) -> PacketBody {

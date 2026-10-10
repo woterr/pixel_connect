@@ -20,7 +20,6 @@ use serde_json::{Map, Value};
 /// KDE Connect protocol version implemented here. Must be >= 8.
 pub const PROTOCOL_VERSION: i64 = 8;
 
-
 /// Hard cap on a single framed line (matches `MAX_PACKET_SIZE` upstream).
 pub const MAX_PACKET_SIZE: usize = 32 * 1024 * 1024;
 
@@ -56,8 +55,10 @@ impl PacketBody {
     }
 
     pub fn insert<V: Serialize>(&mut self, key: &str, value: V) -> &mut Self {
-        self.0
-            .insert(key.to_string(), serde_json::to_value(value).unwrap_or(Value::Null));
+        self.0.insert(
+            key.to_string(),
+            serde_json::to_value(value).unwrap_or(Value::Null),
+        );
         self
     }
 
@@ -142,7 +143,11 @@ pub struct NetworkPacket {
     pub packet_type: String,
     #[serde(default)]
     pub body: PacketBody,
-    #[serde(rename = "payloadSize", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "payloadSize",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub payload_size: Option<u64>,
     #[serde(
         rename = "payloadTransferInfo",
@@ -207,10 +212,7 @@ impl NetworkPacket {
         if let Some(size) = self.payload_size {
             obj.insert("payloadSize".into(), Value::from(size));
             if let Some(info) = &self.payload_transfer_info {
-                obj.insert(
-                    "payloadTransferInfo".into(),
-                    Value::Object(info.0.clone()),
-                );
+                obj.insert("payloadTransferInfo".into(), Value::Object(info.0.clone()));
             }
         }
         let mut out = serde_json::to_vec(&Value::Object(obj)).unwrap_or_default();

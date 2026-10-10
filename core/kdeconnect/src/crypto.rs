@@ -38,7 +38,10 @@ pub struct DeviceIdentity {
 ///
 /// Subject: `CN=<device id>`, issuer identical (self-signed), validity
 /// `now-1y .. now+10y` — the same window KDE Connect uses.
-pub fn generate_identity(device_id: &str, common_name_override: Option<&str>) -> Result<DeviceIdentity> {
+pub fn generate_identity(
+    device_id: &str,
+    common_name_override: Option<&str>,
+) -> Result<DeviceIdentity> {
     let key_pair = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
         .context("generate EC P-256 key pair")?;
 
@@ -69,7 +72,9 @@ pub fn generate_identity(device_id: &str, common_name_override: Option<&str>) ->
     rand::rng().fill_bytes(&mut serial);
     params.serial_number = Some(SerialNumber::from_slice(&serial));
 
-    let cert = params.self_signed(&key_pair).context("self-sign certificate")?;
+    let cert = params
+        .self_signed(&key_pair)
+        .context("self-sign certificate")?;
 
     let cert_pem = cert.pem();
     let key_pem = key_pair.serialize_pem();
@@ -208,7 +213,10 @@ mod tests {
         let pem = der_to_pem(&ident.cert_der);
         assert!(pem.starts_with("-----BEGIN CERTIFICATE-----\n"));
         assert_eq!(certificate_der_from_pem(&pem).unwrap(), ident.cert_der);
-        assert_eq!(certificate_common_name(&certificate_der_from_pem(&pem).unwrap()).unwrap(), id);
+        assert_eq!(
+            certificate_common_name(&certificate_der_from_pem(&pem).unwrap()).unwrap(),
+            id
+        );
     }
 
     #[test]

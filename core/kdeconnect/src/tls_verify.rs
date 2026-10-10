@@ -33,15 +33,23 @@ impl std::fmt::Debug for PinnedPeerVerifier {
     }
 }
 
-impl PinnedPeerVerifier {
-    pub fn new() -> Self {
-        Self::new_client()
-    }
-
-    pub fn new_client() -> Self {
+impl Default for PinnedPeerVerifier {
+    fn default() -> Self {
         Self {
             provider: Arc::new(rustls::crypto::ring::default_provider()),
         }
+    }
+}
+
+impl PinnedPeerVerifier {
+    /// The verifier used on both sides; the two roles need identical checks.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Explicit alias for the client role, so the call site reads clearly.
+    pub fn new_client() -> Self {
+        Self::default()
     }
 
     fn check_leaf(&self, end_entity: &CertificateDer<'_>) -> Result<(), Error> {

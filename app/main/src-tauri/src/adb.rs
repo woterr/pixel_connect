@@ -324,7 +324,12 @@ pub async fn launch_scrcpy(
     };
 
     for a in extra_args {
-        if a.starts_with('-') && !a.chars().skip(1).all(|c| c.is_ascii_alphanumeric() || matches!(c, '=' | '-' | '_' | '.')) {
+        if a.starts_with('-')
+            && !a
+                .chars()
+                .skip(1)
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '=' | '-' | '_' | '.'))
+        {
             return Err(format!("unsafe scrcpy argument: {a:?}"));
         }
     }
@@ -347,11 +352,7 @@ pub async fn launch_scrcpy(
         .map_err(|e| format!("could not start scrcpy: {e}"))?;
 
     let child = Arc::new(Mutex::new(child));
-    state
-        .running
-        .lock()
-        .await
-        .insert(serial.to_string(), child);
+    state.running.lock().await.insert(serial.to_string(), child);
 
     let command = format!("scrcpy {}", args.join(" "));
     Ok(ScrcpyLaunch {
@@ -394,13 +395,6 @@ pub async fn prune(state: &AdbState) {
     }
     for serial in finished {
         running.remove(&serial);
-    }
-}
-
-pub async fn stop_all(state: &AdbState) {
-    let serials: Vec<String> = state.running.lock().await.keys().cloned().collect();
-    for s in serials {
-        let _ = stop_scrcpy(state, &s).await;
     }
 }
 
@@ -460,7 +454,11 @@ DEADBEEF               unauthorized usb:1-7\n";
     fn missing_scrcpy_is_reported_per_device() {
         let devices = parse_devices(SAMPLE, false);
         assert!(devices.iter().all(|d| !d.scrcpy_ready));
-        assert!(devices[1].scrcpy_block_reason.as_ref().unwrap().contains("scrcpy"));
+        assert!(devices[1]
+            .scrcpy_block_reason
+            .as_ref()
+            .unwrap()
+            .contains("scrcpy"));
     }
 
     #[test]

@@ -163,10 +163,7 @@ pub struct ConnectivityReport {
 /// Resolve the user-visible feature list from the peer's advertised
 /// capabilities. Anything we cannot implement is simply absent from the list,
 /// so the UI never shows a control it cannot honour.
-pub fn features_from_capabilities(
-    incoming: &[String],
-    outgoing: &[String],
-) -> Vec<String> {
+pub fn features_from_capabilities(incoming: &[String], outgoing: &[String]) -> Vec<String> {
     let has = |list: &[String], t: &str| list.iter().any(|c| c == t);
 
     let mut features = Vec::new();
@@ -203,7 +200,10 @@ mod tests {
     #[test]
     fn features_only_list_capabilities_the_peer_advertises() {
         let f = features_from_capabilities(
-            &["kdeconnect.clipboard".into(), "kdeconnect.share.request".into()],
+            &[
+                "kdeconnect.clipboard".into(),
+                "kdeconnect.share.request".into(),
+            ],
             &["kdeconnect.share.request".into(), "kdeconnect.ping".into()],
         );
         assert!(f.contains(&"clipboard".to_string()));

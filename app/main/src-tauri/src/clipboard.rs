@@ -226,10 +226,7 @@ fn set_wayland(text: String) {
 
     // `MimeType::Text` offers the usual plain-text types, which every
     // consumer (including GNOME Text Editor and Firefox) understands.
-    if let Err(e) = Options::new().copy(
-        Source::Bytes(text.into_bytes().into()),
-        MimeType::Text,
-    ) {
+    if let Err(e) = Options::new().copy(Source::Bytes(text.into_bytes().into()), MimeType::Text) {
         log::error!("could not set the Wayland clipboard: {e}");
     }
 }
@@ -341,7 +338,10 @@ pub fn capabilities() -> Capabilities {
                 | ClipboardMechanism::WaylandCoreOnly
                 | ClipboardMechanism::WaylandX11Bridge
         ),
-        x11: matches!(m, ClipboardMechanism::X11 | ClipboardMechanism::WaylandX11Bridge),
+        x11: matches!(
+            m,
+            ClipboardMechanism::X11 | ClipboardMechanism::WaylandX11Bridge
+        ),
         background_read_allowed: m.background_read_allowed(),
         background_write_allowed: m.background_read_allowed(),
         note,
@@ -396,9 +396,9 @@ mod tests {
         // A stale entry must stop suppressing, so the same text copied again
         // later still syncs.
         if let Ok(mut slot) = LAST_APPLIED.lock() {
-            *slot = slot.as_ref().map(|(t, at)| {
-                (t.clone(), *at - Duration::from_secs(30))
-            });
+            *slot = slot
+                .as_ref()
+                .map(|(t, at)| (t.clone(), *at - Duration::from_secs(30)));
         }
         assert!(!was_applied("hello"));
     }
@@ -427,6 +427,10 @@ mod tests {
     fn report_the_mechanism_this_session_provides() {
         let m = ClipboardMechanism::detect();
         println!("clipboard mechanism: {} — {}", m.label(), m.detail());
-        assert_ne!(m, ClipboardMechanism::None, "no display server in this session");
+        assert_ne!(
+            m,
+            ClipboardMechanism::None,
+            "no display server in this session"
+        );
     }
 }

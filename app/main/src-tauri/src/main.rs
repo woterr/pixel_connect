@@ -28,7 +28,6 @@ mod quickshare;
 mod settings;
 mod ssh;
 
-
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -65,7 +64,10 @@ async fn main() -> Result<(), anyhow::Error> {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             trace!("another Pixel Connect instance was launched: {argv:?}");
@@ -157,9 +159,10 @@ async fn main() -> Result<(), anyhow::Error> {
                 .separator()
                 .items(&[&show, &quit])
                 .build()?;
-            let icon = app.default_window_icon().cloned().ok_or_else(|| {
-                anyhow::anyhow!("Pixel Connect has no window icon configured")
-            })?;
+            let icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Pixel Connect has no window icon configured"))?;
             TrayIconBuilder::new()
                 .icon(icon)
                 .tooltip("Pixel Connect")
@@ -236,21 +239,23 @@ async fn main() -> Result<(), anyhow::Error> {
                         rt.block_on(async move {
                             let (service, _rx) = KdeConnectService::start(&kc_dir).await?;
                             if !settings_snapshot.kde_device_name.is_empty() {
-                                let _ = service.set_device_name(&settings_snapshot.kde_device_name).await;
+                                let _ = service
+                                    .set_device_name(&settings_snapshot.kde_device_name)
+                                    .await;
                             }
                             if let Some(incoming) = &settings_snapshot.incoming_path {
                                 service
                                     .set_incoming_path(std::path::PathBuf::from(incoming))
                                     .await;
                             }
-                            service
-                                .settings()
-                                .clipboard_enabled
-                                .store(settings_snapshot.clipboard_enabled, std::sync::atomic::Ordering::SeqCst);
-                            service
-                                .settings()
-                                .auto_clipboard
-                                .store(settings_snapshot.clipboard_auto_share, std::sync::atomic::Ordering::SeqCst);
+                            service.settings().clipboard_enabled.store(
+                                settings_snapshot.clipboard_enabled,
+                                std::sync::atomic::Ordering::SeqCst,
+                            );
+                            service.settings().auto_clipboard.store(
+                                settings_snapshot.clipboard_auto_share,
+                                std::sync::atomic::Ordering::SeqCst,
+                            );
                             Ok(KdcState::new(service))
                         })
                     });
@@ -380,7 +385,11 @@ pub fn quit_app(app: &AppHandle) {
 }
 
 pub fn notify(title: &str, body: &str) {
-    match notify_rust::Notification::new().summary(title).body(body).show() {
+    match notify_rust::Notification::new()
+        .summary(title)
+        .body(body)
+        .show()
+    {
         Ok(_) => {}
         Err(e) => log::error!("could not show a notification: {e}"),
     }
