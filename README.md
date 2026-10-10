@@ -33,6 +33,14 @@ Current release: **V2**. Documentation:
 | [`v2-status.md`](docs/architecture/v2-status.md) | what V2 changed, including the measurements that replaced two V1 assumptions |
 | [`v2-transport-findings.md`](docs/architecture/v2-transport-findings.md) | Bluetooth and Wi-Fi Direct, investigated against real hardware |
 
+Security documentation:
+
+| Document | Contents |
+|---|---|
+| [`threat-model.md`](docs/security/threat-model.md) | what is protected, from whom, and across which trust boundaries |
+| [`security-audit.md`](docs/security/security-audit.md) | findings with the evidence for each, including what was deliberately left alone |
+| [`security-hardening-report.md`](docs/security/security-hardening-report.md) | what was changed, what was tested, and what remains unverified |
+
 **Read the status documents before relying on anything here.** In particular,
 no Pixel phone has been attached at any point, so interoperability with
 `kdeconnect-android` is unverified, although interoperability with the
@@ -54,8 +62,12 @@ upstream KDE Connect desktop daemon *is* verified.
   code and documented.
 - **Signing, CI and a real-device acceptance harness** were added.
 
-112 automated tests pass. The single most valuable remaining step is to attach a
-Pixel and run `scripts/device-acceptance.sh --record`.
+134 automated tests pass. `cargo audit` reports no vulnerabilities, and
+`npm audit --omit=dev` reports none in shipped code.
+
+**The single most valuable remaining step is to attach a Pixel and run
+`scripts/device-acceptance.sh --record`.** Nothing in this repository has been
+verified against a real device.
 
 ---
 

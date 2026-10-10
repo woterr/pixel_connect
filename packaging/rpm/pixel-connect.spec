@@ -108,16 +108,23 @@ install -Dm0644 packaging/nautilus/pixel-connect-share.py \
 
 # Offer the file-manager integration for the current user. This never requires
 # KDE Connect and is fully reversible.
+#
+# The scriptlet runs as root, so everything it creates must be *done* as the
+# user. Creating root-owned entries inside someone's home directory works, but
+# leaves files the user cannot replace without sudo, which is both surprising
+# and a needless privilege use on a desktop.
 if [ "$1" = "1" ] && [ -n "$USER" ] && [ "$USER" != "root" ]; then
     _home="$(getent passwd "$USER" | cut -d: -f6)"
     if [ -n "$_home" ]; then
-        mkdir -p "$_home/.local/share/nautilus/scripts" "$_home/.local/share/applications"
-        ln -sf %{_datadir}/pixel-connect/pixel-connect-send \
-            "$_home/.local/share/nautilus/scripts/pixel-connect-send"
+        if command -v runuser >/dev/null 2>&1; then
+            _asuser="runuser -u $USER --"
+        else
+            _asuser="su -s /bin/sh -c"
+        fi
+        $_asuser "mkdir -p '$_home/.local/share/nautilus/scripts' '$_home/.local/share/nautilus-python/extensions'" || :
+        $_asuser "ln -sfn '%{_datadir}/pixel-connect/pixel-connect-send' '$_home/.local/share/nautilus/scripts/pixel-connect-send'" || :
         if [ -f %{_datadir}/nautilus-python/extensions/pixel-connect-share.py ]; then
-            mkdir -p "$_home/.local/share/nautilus-python/extensions"
-            ln -sf %{_datadir}/nautilus-python/extensions/pixel-connect-share.py \
-                "$_home/.local/share/nautilus-python/extensions/pixel-connect-share.py"
+            $_asuser "ln -sfn '%{_datadir}/nautilus-python/extensions/pixel-connect-share.py' '$_home/.local/share/nautilus-python/extensions/pixel-connect-share.py'" || :
         fi
     fi
 fi

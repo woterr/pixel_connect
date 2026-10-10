@@ -705,8 +705,11 @@ async fn handle_outgoing(
         .context("send connection identity")?;
     let socket = writer.into_inner();
 
-    let pinned = ctx.config.lock().await.trusted_certificate_der(&info.id);
-    let _ = pinned;
+    // Pinning is applied by `run_link`, which fetches the stored certificate
+    // for this peer and rejects the handshake if it does not match — before the
+    // link is published. Deliberately not fetched here: holding a local
+    // variable that is immediately discarded invites a reader to believe this
+    // path is unpinned, when the enforcement is one call away and unconditional.
     let tls_stream = ctx
         .tls
         .handshake(TlsRole::Server, socket)

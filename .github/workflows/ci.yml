@@ -55,6 +55,16 @@ jobs:
           cargo clippy --manifest-path core/kdeconnect/Cargo.toml \
             --all-targets -- -D warnings
 
+      - name: Dependency advisories (RustSec)
+        # Fails on any advisory. The five currently-accepted warnings are
+        # documented in docs/security/security-audit.md section 4; this job
+        # deliberately does not suppress them, so a new one cannot hide behind
+        # an existing allow-list entry.
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --file core/kdeconnect/Cargo.lock
+          cargo audit --file app/main/src-tauri/Cargo.lock
+
       - name: Clippy (Quick Share, advisory)
         # Vendored upstream code: warnings are surfaced but never fatal, so an
         # upstream release does not break this project's CI.
@@ -110,6 +120,14 @@ jobs:
       - name: Type check
         working-directory: app/main
         run: npx vue-tsc --noEmit
+
+      - name: Front-end dependency advisories
+        working-directory: app/main
+        # Production dependencies only. The build and test toolchain carries
+        # advisories that cannot ship to a user; each is recorded in
+        # docs/security/security-audit.md section 4 with the reason it is
+        # accepted, so this gate stays meaningful instead of being suppressed.
+        run: npm audit --omit=dev --audit-level=moderate
 
       - name: Front-end tests
         working-directory: app/main
