@@ -340,6 +340,7 @@ impl LanLinkProvider {
             });
         }
 
+        let udp_available = udp.is_some();
         if let Some(udp) = udp {
             let shutdown = self.shutdown.clone();
             let identity = Arc::new(self.discovery_snapshot());
@@ -353,19 +354,41 @@ impl LanLinkProvider {
             });
         }
 
-        #[cfg(target_os = "linux")]
-        {
-            let ctx = self.link_context();
-            let shutdown = self.shutdown.clone();
-            let identity = Arc::new(self.discovery_snapshot());
-            tokio::spawn(async move {
-                tokio::select! {
-                    _ = sleep_until_cancelled(shutdown) => {}
-                    r = mdns_loop(ctx, identity) => {
-                        if let Err(e) = r { error!("KDE Connect mDNS stopped: {e}"); }
+        // mDNS is KDE Connect's *secondary* discovery mechanism. It matters only when
+        // the fixed UDP port could not be bound, which is now rare because
+        // `bind_shared_udp` can share the port with another daemon.
+        //
+        // When UDP 1716 is available we deliberately skip mDNS. Two reasons:
+        //
+        //  1. It is redundant. Upstream treats the UDP broadcast as the primary
+        //     mechanism; avahi is the fallback, not the other way round.
+        //  2. It is actively harmful here. This process links Quick Share's
+        //     forked `mdns-sd` alongside the crates.io one used above, and each
+        //     `ServiceDaemon` binds UDP 5353 independently. Measured on this
+        //     machine the application held 18 sockets on that port and the
+        //     kernel split the multicast between them, starving Quick Share
+        //     discovery completely - zero peers were ever found. Quick Share
+        //     works correctly when run standalone, which is exactly the
+        //     configuration this restores.
+        //
+        // If the UDP port is genuinely unavailable, fall back to mDNS so
+        // discovery still works; the contention is then the lesser problem.
+        if !udp_available {
+            #[cfg(target_os = "linux")]
+            {
+                warn!("UDP discovery unavailable; falling back to mDNS discovery");
+                let ctx = self.link_context();
+                let shutdown = self.shutdown.clone();
+                let identity = Arc::new(self.discovery_snapshot());
+                tokio::spawn(async move {
+                    tokio::select! {
+                        _ = sleep_until_cancelled(shutdown) => {}
+                        r = mdns_loop(ctx, identity) => {
+                            if let Err(e) = r { error!("KDE Connect mDNS stopped: {e}"); }
+                        }
                     }
-                }
-            });
+                });
+            }
         }
 
         Ok(())
