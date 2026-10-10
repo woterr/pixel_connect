@@ -59,6 +59,13 @@ type MutableSetting =
 	| 'incomingPath'
 	| 'clipboardEnabled'
 	| 'clipboardAutoShare'
+	| 'autoAcceptShares'
+	| 'clipboardImagesOnReceive'
+	| 'notifySharedText'
+	| 'notifyShareRequest'
+	| 'notifyTransferComplete'
+	| 'notifyTransferFailed'
+	| 'notifyProgress'
 	| 'kdeDeviceName'
 
 async function save(key: MutableSetting, value: boolean | string | number | null) {
@@ -288,17 +295,117 @@ onMounted(load)
 				</div>
 
 				<div class="pc-card flex items-center gap-4 px-6 py-5">
-					<PcIcon name="bell" :size="20" class="text-muted" />
+					<PcIcon name="shield" :size="20" class="text-muted" />
 					<div class="min-w-0 flex-1">
-						<p class="font-semibold">Transfer alerts</p>
-						<p class="text-sm text-muted">System notifications for file activity.</p>
+						<p class="font-semibold">Auto-accept incoming shares</p>
+						<p class="text-sm text-muted">
+							Accept files from your phone without being asked. Off by default: any
+							paired device can send, so this lets a phone write to this computer
+							unprompted. Files are saved to your download folder either way.
+						</p>
 					</div>
 					<ToggleSwitch
-						:model-value="true"
-						label="Transfer alerts"
-						disabled
+						:model-value="settings.autoAcceptShares"
+						label="Auto-accept incoming shares"
+						@update:model-value="save('autoAcceptShares', $event)"
 					/>
-					<span class="pc-chip">Always on in V1</span>
+				</div>
+
+				<div class="pc-card flex items-center gap-4 px-6 py-5">
+					<PcIcon name="image" :size="20" class="text-muted" />
+					<div class="min-w-0 flex-1">
+						<p class="font-semibold">Copy received images to the clipboard</p>
+						<p class="text-sm text-muted">
+							So a photo sent from your phone can be pasted straight into a message.
+							Only images; other files are just saved.
+						</p>
+					</div>
+					<ToggleSwitch
+						:model-value="settings.clipboardImagesOnReceive"
+						label="Copy received images to the clipboard"
+						@update:model-value="save('clipboardImagesOnReceive', $event)"
+					/>
+				</div>
+
+				<!--
+					Notification categories. Each event is switchable on its own so a
+					transfer can announce itself without every progress tick also
+					announcing itself. `notifyProgress` is off by default: it fires
+					repeatedly during a single transfer.
+				-->
+				<div class="pc-card flex items-center gap-4 px-6 py-5">
+					<PcIcon name="bell" :size="20" class="text-muted" />
+					<div class="min-w-0 flex-1">
+						<p class="font-semibold">Notify when text is shared</p>
+						<p class="text-sm text-muted">
+							Your phone sends text or a link and it lands on your clipboard.
+						</p>
+					</div>
+					<ToggleSwitch
+						:model-value="settings.notifySharedText"
+						label="Notify when text is shared"
+						@update:model-value="save('notifySharedText', $event)"
+					/>
+				</div>
+
+				<div class="pc-card flex items-center gap-4 px-6 py-5">
+					<PcIcon name="bell" :size="20" class="text-muted" />
+					<div class="min-w-0 flex-1">
+						<p class="font-semibold">Notify about incoming shares</p>
+						<p class="text-sm text-muted">
+							When your phone sends a file or a link. The notification can accept or
+							reject it without opening this window.
+						</p>
+					</div>
+					<ToggleSwitch
+						:model-value="settings.notifyShareRequest"
+						label="Notify about incoming shares"
+						@update:model-value="save('notifyShareRequest', $event)"
+					/>
+				</div>
+
+				<div class="pc-card flex items-center gap-4 px-6 py-5">
+					<PcIcon name="check" :size="20" class="text-muted" />
+					<div class="min-w-0 flex-1">
+						<p class="font-semibold">Notify when a transfer finishes</p>
+						<p class="text-sm text-muted">One notification per completed transfer.</p>
+					</div>
+					<ToggleSwitch
+						:model-value="settings.notifyTransferComplete"
+						label="Notify when a transfer finishes"
+						@update:model-value="save('notifyTransferComplete', $event)"
+					/>
+				</div>
+
+				<div class="pc-card flex items-center gap-4 px-6 py-5">
+					<PcIcon name="alert" :size="20" class="text-muted" />
+					<div class="min-w-0 flex-1">
+						<p class="font-semibold">Notify when a transfer fails</p>
+						<p class="text-sm text-muted">
+							Includes the reason, so a failure is never silent.
+						</p>
+					</div>
+					<ToggleSwitch
+						:model-value="settings.notifyTransferFailed"
+						label="Notify when a transfer fails"
+						@update:model-value="save('notifyTransferFailed', $event)"
+					/>
+				</div>
+
+				<div class="pc-card flex items-center gap-4 px-6 py-5">
+					<PcIcon name="activity" :size="20" class="text-muted" />
+					<div class="min-w-0 flex-1">
+						<p class="font-semibold">Notify on transfer progress</p>
+						<p class="text-sm text-muted">
+							Off by default: this fires repeatedly while a transfer runs. Progress is
+							always shown in the app.
+						</p>
+					</div>
+					<ToggleSwitch
+						:model-value="settings.notifyProgress"
+						label="Notify on transfer progress"
+						@update:model-value="save('notifyProgress', $event)"
+					/>
 				</div>
 
 				<div class="pc-card flex items-center gap-4 px-6 py-5">

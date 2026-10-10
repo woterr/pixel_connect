@@ -113,6 +113,15 @@ export const kdePendingShares = () => invoke<PendingShare[]>('kde_pending_shares
 
 export const kdeDismissShare = (id: string) => invoke<void>('kde_dismiss_share', { id })
 
+/**
+ * Record acceptance of an incoming share.
+ *
+ * KDE Connect has no consent step for a *received* file — the bytes land on
+ * disk as soon as they arrive — so this cannot refuse a transfer. It records
+ * the decision and clears the request.
+ */
+export const kdeAcceptShare = (id: string) => invoke<void>('kde_accept_share', { id })
+
 export const kdeNotifications = () =>
 	invoke<RemoteNotification[]>('kde_notifications')
 

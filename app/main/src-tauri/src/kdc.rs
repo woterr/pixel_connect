@@ -160,6 +160,14 @@ async fn handle_event(app: &AppHandle, state: &Arc<KdcState>, event: KcEvent) ->
                 content.len(),
                 crate::clipboard::ClipboardMechanism::detect()
             );
+            // The clipboard changed with no other visible sign, so this is the
+            // one event that is invisible without a notification. Show only a
+            // preview: the text itself may be a password or a token.
+            crate::notification::notify(
+                app,
+                crate::notification::NotifyKind::SharedText,
+                &format!("{device_name} shared text with you"),
+            );
             let _ = app.emit(
                 "kdeconnect:clipboard",
                 serde_json::json!({ "deviceId": device_id, "deviceName": device_name }),
@@ -167,6 +175,58 @@ async fn handle_event(app: &AppHandle, state: &Arc<KdcState>, event: KcEvent) ->
         }
         KcEvent::ShareOffer(offer) => {
             let pending = to_pending(&offer);
+
+            // Auto-accept only ever *records* the decision. KDE Connect has no
+            // consent step for a received file: the protocol has the receiver
+            // open the payload connection and write the bytes as soon as the
+            // announcement arrives, and Android's `LanLink.kt` does the same
+            // when it receives. So the file is already in the incoming folder
+            // by the time this runs, whether or not the user was asked.
+            //
+            // The setting therefore changes whether a request is *acknowledged*
+            // automatically, not whether the file arrives. Treating it as a
+            // security control would be a lie: the switch is documented as such
+            // in Settings.
+            if settings::get_bool(app, "auto_accept_shares") {
+                log::info!(
+                    "auto-accepting a {} share from {} (already received by protocol)",
+                    offer.kind,
+                    offer.device_name
+                );
+                let _ = app.emit(
+                    "kdeconnect:share_auto_accepted",
+                    serde_json::json!({
+                        "id": format!("{}:{}", offer.device_id, offer.kind),
+                        "filename": offer.filename,
+                        "deviceName": offer.device_name,
+                    }),
+                );
+                return Ok(());
+            }
+
+            // The summary describes the offer, not its contents. A filename is
+            // safe to show; the shared text is not put in the notification.
+            let summary = match (&offer.kind[..], &offer.filename) {
+                (k, Some(f)) if k == "file" => f.clone(),
+                (k, _) if k == "text" => "some text".into(),
+                (k, _) if k == "url" => "a link".into(),
+                _ => "something".into(),
+            };
+            let size = offer
+                .filesize
+                .map(crate::kdc::human_size)
+                .unwrap_or_default();
+            let body = if size.is_empty() {
+                summary
+            } else {
+                format!("{summary} ({size})")
+            };
+            crate::notification::notify_share_request(
+                app,
+                &offer.device_name,
+                &body,
+                format!("{}:{}", offer.device_id, offer.kind),
+            );
             state.shares.lock().await.push(pending.clone());
             let _ = app.emit("kdeconnect:share", pending);
         }
@@ -231,6 +291,25 @@ async fn handle_event(app: &AppHandle, state: &Arc<KdcState>, event: KcEvent) ->
             list.push(entry);
         }
         KcEvent::TransferProgress(t) => {
+            // Only the terminal events notify. Progress fires many times per
+            // transfer and is already visible in the app; announcing every
+            // update is exactly the bombardment to avoid.
+            if t.done {
+                let size = crate::kdc::human_size(t.total);
+                if let Some(err) = &t.error {
+                    crate::notification::notify(
+                        app,
+                        crate::notification::NotifyKind::TransferFailed,
+                        &format!("{}: {err}", t.filename),
+                    );
+                } else {
+                    crate::notification::notify(
+                        app,
+                        crate::notification::NotifyKind::TransferComplete,
+                        &format!("{} ({size})", t.filename),
+                    );
+                }
+            }
             let _ = app.emit("kdeconnect:transfer", *t);
         }
         KcEvent::Log { level, message } => match level.as_str() {
@@ -347,6 +426,50 @@ pub async fn pending_shares(state: &KdcState) -> Vec<PendingShare> {
 
 pub async fn dismiss_share(state: &KdcState, id: &str) {
     state.shares.lock().await.retain(|s| s.id != id);
+}
+
+/// Format a byte count for a notification body.
+pub fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if bytes == 0 {
+        return String::new();
+    }
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    // Whole numbers for bytes, one decimal above that: "512 B" and "1.4 MB".
+    if unit == 0 {
+        format!("{} {}", size as u64, UNITS[unit])
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
+/// Record that the user accepted an incoming share.
+///
+/// KDE Connect has no accept/reject step for a *received* file: the protocol
+/// has the receiver open the payload connection and write the bytes
+/// immediately, and Android does the same when it receives. By the time an
+/// offer reaches the UI the file is already on disk. So this cannot refuse a
+/// transfer — it records the decision and tells the UI, which is the only
+/// honest thing available. See docs/diagnosis/incoming-share-consent.md.
+pub async fn accept_share(state: &KdcState, id: &str) -> Result<()> {
+    let share = {
+        let mut list = state.shares.lock().await;
+        match list.iter().position(|s| s.id == id) {
+            Some(i) => list.remove(i),
+            None => return Err(anyhow::anyhow!("that share request is no longer pending")),
+        }
+    };
+    log::info!(
+        "accepted share {id} from {} ({}), which the protocol had already received",
+        share.device_name,
+        share.filename.as_deref().unwrap_or("text")
+    );
+    Ok(())
 }
 
 pub async fn notifications(state: &KdcState) -> Vec<RemoteNotification> {

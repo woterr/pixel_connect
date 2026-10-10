@@ -307,6 +307,19 @@ pub async fn kde_dismiss_share(kdc: Kdc<'_>, id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Accept an incoming share.
+///
+/// Note what this can and cannot do: KDE Connect has no consent step for a
+/// received file, so the bytes are already on disk by the time this is called.
+/// It records the decision and clears the request; it cannot refuse the
+/// transfer. See docs/diagnosis/incoming-share-consent.md.
+#[tauri::command]
+pub async fn kde_accept_share(kdc: Kdc<'_>, id: String) -> Result<(), String> {
+    crate::kdc::accept_share(kdc.inner(), &id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn kde_notifications(
     kdc: Kdc<'_>,

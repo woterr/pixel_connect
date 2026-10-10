@@ -220,6 +220,35 @@ async function copySharedText(share: PendingShare) {
 	}
 }
 
+/**
+ * Accept an incoming share.
+ *
+ * What this can and cannot do is worth being precise about. KDE Connect has no
+ * consent step for a *received* file: the protocol has the receiver open the
+ * payload connection and write the bytes as soon as the announcement arrives,
+ * and Android's `LanLink.kt` does the same when it receives. By the time an
+ * offer is in this list the file is already in the incoming folder.
+ *
+ * So this records the decision and clears the request. It cannot refuse the
+ * transfer, and the button must not pretend otherwise. Rejecting below only
+ * hides the row.
+ */
+async function acceptShare(share: PendingShare) {
+	try {
+		await api.kdeAcceptShare(share.id)
+		store.shares = store.shares.filter((x) => x.id !== share.id)
+		const what = share.filename ?? 'the shared item'
+		store.toast(`Saved ${what} to your incoming folder`, 'success')
+	} catch (e) {
+		store.toast(`Could not accept that share: ${e}`, 'error')
+	}
+}
+
+async function rejectShare(share: PendingShare) {
+	await api.kdeDismissShare(share.id)
+	store.shares = store.shares.filter((x) => x.id !== share.id)
+}
+
 async function openPendingShare(id: string) {
 	await api.kdeDismissShare(id)
 	emit('navigate', 'devices')
@@ -480,11 +509,16 @@ onBeforeUnmount(() => {
 						Copy to clipboard
 					</button>
 					<button
-						v-else
-						class="pc-btn pc-btn-secondary pc-btn-sm"
-						@click="openPendingShare(share.id)"
+						class="pc-btn pc-btn-primary pc-btn-sm"
+						@click="acceptShare(share)"
 					>
-						Review
+						Accept
+					</button>
+					<button
+						class="pc-btn pc-btn-secondary pc-btn-sm"
+						@click="rejectShare(share)"
+					>
+						Dismiss
 					</button>
 				</div>
 			</div>

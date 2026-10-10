@@ -76,6 +76,13 @@ export interface Settings {
 	kdeDeviceName: string
 	nautilusEnabled: boolean
 	preferredDeviceId: string | null
+	autoAcceptShares: boolean
+	clipboardImagesOnReceive: boolean
+	notifySharedText: boolean
+	notifyShareRequest: boolean
+	notifyTransferComplete: boolean
+	notifyTransferFailed: boolean
+	notifyProgress: boolean
 }
 
 export interface AppInfo {

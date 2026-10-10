@@ -275,24 +275,43 @@ pub fn set_text(text: String) {
 ///
 /// Only the text is kept, in memory, for as long as the process lives. It is
 /// never written to disk and never logged.
-static LAST_APPLIED: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+const ECHO_WINDOW: Duration = Duration::from_secs(4);
+const MAX_REMEMBERED: usize = 8;
 
 /// Remember text we just wrote to the local clipboard.
-pub fn remember_applied(text: &str) {
-    if let Ok(mut slot) = LAST_APPLIED.lock() {
-        *slot = Some((text.to_string(), Instant::now()));
-    }
-}
+///
+/// Several values can be in flight: two devices can each push text, and a
+/// transfer can finish while one of those writes is still settling. A single
+/// slot silently drops the earlier entry, which lets that one echo back to the
+/// phone. The list is bounded and short-lived, so this cannot grow.
+static REMEMBERED: Mutex<Vec<(String, Instant)>> = Mutex::new(Vec::new());
 
 /// True when `text` is the clipboard content we ourselves just applied.
 ///
 /// The time bound stops a stale entry from suppressing a genuine re-copy of the
 /// same text much later.
 pub fn was_applied(text: &str) -> bool {
-    const ECHO_WINDOW: Duration = Duration::from_secs(4);
-    match LAST_APPLIED.lock().ok().and_then(|s| s.clone()) {
-        Some((previous, at)) if previous == text => at.elapsed() < ECHO_WINDOW,
-        _ => false,
+    let Ok(mut entries) = REMEMBERED.lock() else {
+        return false;
+    };
+    let now = Instant::now();
+    entries.retain(|(_, at)| now.duration_since(*at) < ECHO_WINDOW);
+    entries.iter().any(|(s, _)| s == text)
+}
+
+/// Record text we just wrote to the local clipboard.
+pub fn remember_applied(text: &str) {
+    let Ok(mut entries) = REMEMBERED.lock() else {
+        return;
+    };
+    let now = Instant::now();
+    entries.retain(|(_, at)| now.duration_since(*at) < ECHO_WINDOW);
+    // Re-recording the same value just refreshes its window.
+    entries.retain(|(s, _)| s != text);
+    entries.push((text.to_string(), now));
+    if entries.len() > MAX_REMEMBERED {
+        let excess = entries.len() - MAX_REMEMBERED;
+        entries.drain(0..excess);
     }
 }
 
@@ -427,12 +446,31 @@ mod tests {
 
         // A stale entry must stop suppressing, so the same text copied again
         // later still syncs.
-        if let Ok(mut slot) = LAST_APPLIED.lock() {
-            *slot = slot
-                .as_ref()
-                .map(|(t, at)| (t.clone(), *at - Duration::from_secs(30)));
+        if let Ok(mut entries) = REMEMBERED.lock() {
+            for (_, at) in entries.iter_mut() {
+                *at -= Duration::from_secs(30);
+            }
         }
         assert!(!was_applied("hello"));
+    }
+
+    /// Two devices can each push text before the first has settled. A single
+    /// remembered slot would drop one of them and let it echo back.
+    #[test]
+    fn several_pending_applies_are_all_remembered() {
+        remember_applied("from-pixel");
+        remember_applied("from-tablet");
+        assert!(was_applied("from-pixel"));
+        assert!(was_applied("from-tablet"));
+    }
+
+    #[test]
+    fn the_remembered_list_is_bounded() {
+        for i in 0..(MAX_REMEMBERED * 3) {
+            remember_applied(&format!("value-{i}"));
+        }
+        let len = REMEMBERED.lock().map(|e| e.len()).unwrap_or(0);
+        assert!(len <= MAX_REMEMBERED, "grew to {len} entries");
     }
 
     #[test]

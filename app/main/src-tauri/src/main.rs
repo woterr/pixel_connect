@@ -24,6 +24,7 @@ mod cmds;
 mod kdc;
 mod logger;
 mod nautilus;
+mod notification;
 mod quickshare;
 mod settings;
 mod ssh;
@@ -110,6 +111,7 @@ async fn main() -> Result<(), anyhow::Error> {
             cmds::kde_reply_to_notification,
             cmds::kde_pending_shares,
             cmds::kde_dismiss_share,
+            cmds::kde_accept_share,
             cmds::kde_notifications,
             cmds::kde_clear_notifications,
             cmds::kde_request_clipboard,

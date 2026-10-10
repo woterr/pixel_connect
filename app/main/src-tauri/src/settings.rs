@@ -42,6 +42,22 @@ pub struct Settings {
     pub nautilus_enabled: bool,
     /// Preferred device for "Send to Pixel" and Quick Share.
     pub preferred_device_id: Option<String>,
+    /// Accept incoming shares without asking.
+    ///
+    /// Off by default. A share writes to disk without a prompt, and the phone
+    /// only has to be *paired*, not actively held by its owner, so accepting
+    /// silently turns a paired device into one that can drop files at will.
+    /// The user opts in explicitly.
+    pub auto_accept_shares: bool,
+    /// Copy a received image to the clipboard as well as saving it.
+    pub clipboard_images_on_receive: bool,
+    /// Notifications. Each event is separately switchable so the app can be
+    /// silenced per category instead of all-or-nothing.
+    pub notify_shared_text: bool,
+    pub notify_share_request: bool,
+    pub notify_transfer_complete: bool,
+    pub notify_transfer_failed: bool,
+    pub notify_progress: bool,
 }
 
 impl Default for Settings {
@@ -60,6 +76,17 @@ impl Default for Settings {
             kde_device_name: String::new(),
             nautilus_enabled: false,
             preferred_device_id: None,
+            // Silent acceptance is opt-in: see the field docs.
+            auto_accept_shares: false,
+            clipboard_images_on_receive: true,
+            // Only the events that are otherwise invisible get a notification.
+            // Progress is off by default because it fires repeatedly during a
+            // transfer, which is the "bombardment" case.
+            notify_shared_text: true,
+            notify_share_request: true,
+            notify_transfer_complete: true,
+            notify_transfer_failed: true,
+            notify_progress: false,
         }
     }
 }
@@ -121,6 +148,34 @@ pub fn load(app: &AppHandle) -> Settings {
         preferred_device_id: s
             .get("preferred_device_id")
             .and_then(|v| v.as_str().map(|s| s.to_string())),
+        auto_accept_shares: s
+            .get("auto_accept_shares")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(d.auto_accept_shares),
+        clipboard_images_on_receive: s
+            .get("clipboard_images_on_receive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(d.clipboard_images_on_receive),
+        notify_shared_text: s
+            .get("notify_shared_text")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(d.notify_shared_text),
+        notify_share_request: s
+            .get("notify_share_request")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(d.notify_share_request),
+        notify_transfer_complete: s
+            .get("notify_transfer_complete")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(d.notify_transfer_complete),
+        notify_transfer_failed: s
+            .get("notify_transfer_failed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(d.notify_transfer_failed),
+        notify_progress: s
+            .get("notify_progress")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(d.notify_progress),
     }
 }
 
@@ -139,6 +194,16 @@ pub fn save(app: &AppHandle, settings: &Settings) -> anyhow::Result<()> {
     s.set("kde_device_name", settings.kde_device_name.clone());
     s.set("nautilus_enabled", settings.nautilus_enabled);
     s.set("preferred_device_id", settings.preferred_device_id.clone());
+    s.set("auto_accept_shares", settings.auto_accept_shares);
+    s.set(
+        "clipboard_images_on_receive",
+        settings.clipboard_images_on_receive,
+    );
+    s.set("notify_shared_text", settings.notify_shared_text);
+    s.set("notify_share_request", settings.notify_share_request);
+    s.set("notify_transfer_complete", settings.notify_transfer_complete);
+    s.set("notify_transfer_failed", settings.notify_transfer_failed);
+    s.set("notify_progress", settings.notify_progress);
     Ok(())
 }
 
