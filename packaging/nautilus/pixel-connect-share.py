@@ -143,7 +143,18 @@ class PixelConnectMenuProvider(GObject.GObject, Nautilus.MenuProvider):
     __gtype_name__ = "PixelConnectMenuProvider"
 
     def _eligible(self, files):
-        """Only offer the action for local, existing, non-hidden files."""
+        """Only offer the action for local, existing, non-hidden files.
+
+        Nautilus 4.x passes a single `Nautilus.FileInfo` to
+        `get_background_items` but a list to `get_file_items`, so normalise
+        both shapes here. Treating the single object as a list raised
+        `TypeError: 'NautilusVFSFile' object is not iterable` on every menu
+        build.
+        """
+        if files is None:
+            return False
+        if hasattr(files, "get_uri_scheme"):
+            files = [files]
         for f in files:
             if f.get_uri_scheme() != "file":
                 return False
@@ -163,9 +174,8 @@ class PixelConnectMenuProvider(GObject.GObject, Nautilus.MenuProvider):
         item.connect("activate", self._on_activate, files)
         return item
 
-    def get_background_items(self, *args):
-        if args and args[0] is not None and not self._eligible(args[0]):
-            return []
+    def get_background_items(self, current_folder):
+        """Nautilus 4.x signature: a single FileInfo for the open folder."""
         return [self._background_items("PixelConnect::send_bg", [])]
 
     def get_file_items(self, files):

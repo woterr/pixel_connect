@@ -42,9 +42,31 @@ def _notify(message, urgency="normal"):
         print(message)
 
 
+def _absolutise(value):
+    """Turn one argument into something the backend will accept.
+
+    The backend takes either an absolute path or a `file://` URI and rejects
+    anything else, which is the right behaviour. The problem was this script
+    forwarding arguments unchanged, so being run from Nautilus's Scripts menu or
+    from a shell with a relative path produced the unhelpful
+
+        "notes.txt" is not a local file
+
+    Resolve relative paths here, and unwrap a file:// URI, so a correctly
+    chosen file is never refused for a reason the user cannot act on.
+    """
+    if value.startswith("file://"):
+        from urllib.parse import unquote, urlparse
+        parsed = urlparse(value)
+        return unquote(parsed.path)
+    if value.startswith("/"):
+        return value
+    return os.path.abspath(os.path.expanduser(value))
+
+
 def main(argv):
     # Nautilus passes the selected files; GNOME's "Open With" passes file:// URIs.
-    paths = [a for a in argv if a and not a.startswith("-")]
+    paths = [_absolutise(a) for a in argv if a and not a.startswith("-")]
     if not paths:
         _fail("no files were selected", 2)
 
