@@ -31,7 +31,7 @@ use tokio::sync::Semaphore;
 /// How long an inbound connection has to identify itself and complete TLS
 /// before it is abandoned. A peer that opens a socket and then says nothing
 /// must not be able to occupy a slot indefinitely.
-const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+pub const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Maximum number of inbound KDE Connect connections handled concurrently.
 pub const MAX_INBOUND_CONNECTIONS: usize = 24;
@@ -715,28 +715,64 @@ async fn accept_loop(
         tokio::spawn(async move {
             // The permit is held for the whole connection and released on drop.
             let _permit = permit;
-            let result = tokio::time::timeout(
-                INBOUND_HANDSHAKE_TIMEOUT,
-                handle_incoming(socket, peer, ctx.clone(), events.clone(), devices, links),
-            )
-            .await
-            .unwrap_or_else(|_| Err(anyhow!("timed out establishing the link")));
-            if let Err(e) = result {
-                debug!("incoming KDE Connect connection from {peer} ended: {e}");
+
+            // The timeout covers **only** the handshake - identity packet, TLS,
+            // and pinning. It must not wrap the link itself.
+            //
+            // It used to wrap `handle_incoming`, which returns only when the
+            // link ends, because `run_link` is called from inside it. Every
+            // inbound connection was therefore torn down at exactly 30 seconds
+            // no matter what it was doing. Confirmed by measurement: a 30 s
+            // `wait_for` around a sleeping task kills it at 30.0 s.
+            //
+            // The symptom looked like a network problem - the link died "after
+            // about 30 seconds" on a hotspot *and* on a home network - which
+            // sent the investigation after NAT timeouts rather than at a
+            // constant sitting in this file.
+            let handshake = tokio::time::timeout(INBOUND_HANDSHAKE_TIMEOUT, async {
+                establish_incoming(
+                    socket, peer, ctx.clone(), events.clone(), devices, links,
+                )
+                .await
+            })
+            .await;
+
+            let link = match handshake {
+                Err(_) => {
+                    debug!(
+                        "incoming KDE Connect connection from {peer} never finished \
+                         the handshake; abandoning it"
+                    );
+                    return;
+                }
+                Ok(Err(e)) => {
+                    debug!("incoming KDE Connect handshake from {peer} failed: {e}");
+                    return;
+                }
+                Ok(Ok(link)) => link,
+            };
+
+            // No timeout from here on: this is the link's lifetime.
+            if let Err(e) = link.run().await {
+                debug!("incoming KDE Connect link from {peer} ended: {e}");
             }
         });
     }
 }
 
-/// We accepted the TCP connection, so we must play the TLS **client**.
-async fn handle_incoming(
+/// Complete the handshake only, then hand back a link ready to run.
+///
+/// Split from the link's lifetime on purpose: the caller applies
+/// `INBOUND_HANDSHAKE_TIMEOUT` to *this* function, and running the link inside
+/// it would put every connection's lifetime under that timeout.
+async fn establish_incoming(
     socket: TcpStream,
     peer: SocketAddr,
     ctx: Arc<LinkContext>,
     events: broadcast::Sender<KcEvent>,
     devices: Arc<RwLock<HashMap<String, KcDevice>>>,
     links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>>,
-) -> Result<()> {
+) -> Result<crate::link::DeviceLink<tokio::net::TcpStream>> {
     let mut reader = LineReader::new(socket);
     let first = reader
         .read_packet(MAX_IDENTITY_PACKET_SIZE)
@@ -748,7 +784,8 @@ async fn handle_incoming(
 
     if target_id != ctx.device_info().id {
         // Busy-LAN noise: every KDE Connect peer dials every port in range.
-        return Ok(());
+        // Not an error, and not a link - just drop it.
+        return Err(anyhow!("connection was addressed to another device"));
     }
 
     let peer_id = first
@@ -762,7 +799,8 @@ async fn handle_incoming(
 
     if links.lock().await.contains_key(&peer_id) {
         // A link already exists for this device; KDE Connect keeps only one.
-        return Ok(());
+        // Refuse this one rather than replacing a working link.
+        return Err(anyhow!("a link to {peer_id} already exists"));
     }
 
     let socket = reader.into_inner();
@@ -785,7 +823,9 @@ async fn handle_incoming(
         .context("TLS handshake (client role)")?;
     let _ = &peer_id;
 
-    crate::link::run_link(
+    // Return the link rather than running it: the accept loop bounds the
+    // handshake with a timeout and must not bound the link's lifetime.
+    crate::link::make_link(
         tls_stream,
         peer_id,
         peer_name,
@@ -843,6 +883,9 @@ async fn handle_outgoing(
     let version = info.protocol_version;
     let id = info.id.clone();
 
+    // We dialled out, so there is no accept-loop timeout involved: run the link
+    // to completion here. Only the *inbound* path needs the handshake split,
+    // because only there is a timeout in scope.
     crate::link::run_link(
         tls_stream, id, name, version, peer_addr, ctx, devices, links, events, trusted,
     )

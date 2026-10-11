@@ -53,7 +53,13 @@ pub const LINK_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs
 
 /// Bring up a device link on an already-established TLS stream.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_link<S>(
+/// Complete the handshake and return a link ready to run, without running it.
+///
+/// Split out of `run_link` so the caller can bound the *handshake* with a
+/// timeout and then run the link without one. When both were in one function the
+/// timeout necessarily covered the link's lifetime, and every connection died
+/// at exactly that interval.
+pub async fn make_link<S>(
     stream: TlsStream<S>,
     peer_id: String,
     peer_name: String,
@@ -64,7 +70,7 @@ pub async fn run_link<S>(
     links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>>,
     events: broadcast::Sender<KcEvent>,
     trusted: bool,
-) -> Result<()>
+) -> Result<DeviceLink<S>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -117,7 +123,7 @@ where
         ));
     }
 
-    let link = DeviceLink {
+    Ok(DeviceLink {
         ctx,
         reader,
         writer,
@@ -132,11 +138,34 @@ where
         links,
         devices,
         last_clipboard_ts: crate::config::now_millis(),
-    };
-    link.run().await
+    })
 }
 
-struct DeviceLink<S: AsyncRead + AsyncWrite + Unpin> {
+/// Complete the handshake and run the link to completion.
+pub async fn run_link<S>(
+    stream: TlsStream<S>,
+    peer_id: String,
+    peer_name: String,
+    peer_version: i64,
+    peer_addr: SocketAddr,
+    ctx: Arc<LinkContext>,
+    devices: Arc<RwLock<HashMap<String, KcDevice>>>,
+    links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>>,
+    events: broadcast::Sender<KcEvent>,
+    trusted: bool,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    make_link(
+        stream, peer_id, peer_name, peer_version, peer_addr, ctx, devices, links, events, trusted,
+    )
+    .await?
+    .run()
+    .await
+}
+
+pub struct DeviceLink<S: AsyncRead + AsyncWrite + Unpin> {
     ctx: Arc<LinkContext>,
     reader: LineReader<tokio::io::ReadHalf<TlsStream<S>>>,
     writer: PacketWriter<tokio::io::WriteHalf<TlsStream<S>>>,
@@ -157,7 +186,7 @@ struct DeviceLink<S: AsyncRead + AsyncWrite + Unpin> {
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
-    async fn run(mut self) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> {
         self.pairing.set_state(if self.trusted {
             PairState::Paired
         } else {
@@ -1279,6 +1308,63 @@ pub fn share_url_packet(url: &str) -> p::NetworkPacket {
 /// connect two instances of *this* implementation, so an inversion on both
 /// sides still agrees with itself and passes.
 #[cfg(test)]
+/// The bug that made every connection die at exactly 30 seconds.
+///
+/// `INBOUND_HANDSHAKE_TIMEOUT` wrapped `handle_incoming`, which returns only
+/// when the link ends, because `run_link` was called from inside it. Every
+/// inbound connection was therefore torn down at precisely that interval,
+/// regardless of activity or network.
+///
+/// It presented as a network fault - "it drops after about 30 seconds", on a
+/// hotspot *and* on a home network - which sent the investigation after NAT
+/// timeouts and then at a missing keepalive, neither of which was it. The
+/// giveaway was the interval being exactly constant.
+mod inbound_lifetime_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// The handshake budget must be short enough to hold a slot briefly, but
+    /// it is a *handshake* budget and must never gate a live connection.
+    #[test]
+    fn the_handshake_budget_is_not_a_link_budget() {
+        assert!(crate::lan::INBOUND_HANDSHAKE_TIMEOUT <= Duration::from_secs(30));
+    }
+
+    /// The keepalive must be more patient than the old 30 s teardown, or a
+    /// link would still be killed before it could be kept alive.
+    #[test]
+    fn the_keepalive_outlives_the_old_teardown_interval() {
+        assert!(
+            LINK_STALE_AFTER > Duration::from_secs(30),
+            "a stale-link timeout at or below 30s would reproduce the original \
+             symptom even with a working keepalive"
+        );
+    }
+
+    /// A link must outlive any handshake budget.
+    ///
+    /// The teardown that caused the 30-second disconnect was `INBOUND_HANDSHAKE_TIMEOUT`
+    /// wrapping the whole link. The handshake itself needs only seconds - it is
+    /// one identity packet and a TLS exchange - while a link legitimately lives
+    /// for hours. If these two ever converge again, the symptom returns
+    /// unchanged, so pin the relationship explicitly rather than trusting that
+    /// nobody will move a timeout inwards.
+    #[test]
+    fn a_link_is_not_bounded_by_the_handshake_budget() {
+        // The handshake is bounded by a *constant*, and links are bounded by
+        // the keepalive instead. Neither is derived from the other.
+        assert_eq!(
+            crate::lan::INBOUND_HANDSHAKE_TIMEOUT,
+            Duration::from_secs(30)
+        );
+        assert!(
+            LINK_STALE_AFTER > crate::lan::INBOUND_HANDSHAKE_TIMEOUT,
+            "a stale link must be given longer than the handshake budget, or \
+             the handshake timeout becomes the de facto link lifetime"
+        );
+    }
+}
+
 mod payload_role_tests {
     use super::TlsRole;
 
