@@ -170,7 +170,46 @@ impl QuickShareService {
             // both live, an AcceptTransfer sent for one could be consumed by the
             // other - which is what made "Accept" in the notification appear to
             // do nothing.
-            let (msg_sender, _) = broadcast::channel(50);
+            //
+            // The Receiver is kept alive by the relay below and must be. A
+            // tokio broadcast channel with no receivers is not a queue that
+            // nobody is reading yet - `send` on it returns Err, and every
+            // message is discarded at the point it is produced. The first
+            // version of this bound the Receiver to `_`, which made the whole
+            // channel dead on arrival: the handshake below completed on the
+            // wire and the payload was transferred, and the application was
+            // told nothing, because every event had been thrown away. That is
+            // what left the UI on "connecting" indefinitely.
+            let (msg_sender, mut msg_rx) = broadcast::channel(50);
+
+            // Relay this session's events to the application.
+            //
+            // Two InboundRequest sessions cannot share one channel, because
+            // each `recv()` takes the first message available and they would
+            // consume each other's traffic - which is why they have separate
+            // channels - but the application still needs to see both. So each
+            // session's channel is private and is drained here onto the one
+            // the application listens to.
+            let relay_sender = self.message_sender.clone();
+            tracker.spawn(async move {
+                loop {
+                    match msg_rx.recv().await {
+                        Ok(msg) => {
+                            let _ = relay_sender.send(msg);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            // This relay is slower than a session produces.
+                            // Dropping is the same choice tokio makes and is
+                            // recorded rather than silently tolerated.
+                            debug!(
+                                "BLE session outran the relay by {skipped} message(s); \
+                                 the application will miss them"
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
             let hostname = sys_metrics::host::get_hostname().unwrap_or_else(|_| "Pixel Connect".into());
             let endpoint_for_ble = rx_endpoint_id;
             let hostname_gatt = hostname.clone();

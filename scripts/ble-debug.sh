@@ -44,76 +44,70 @@ pretty() { sed -E 's/^time=[0-9]+ [0-9.]+ sender=[^ ]+ //; s/\x1b\[[0-9;]*m//g';
 analyse() {
     banner "What the phone actually did"
 
-    if [ ! -s "$HCI_LOG" ]; then
-        echo "  Nothing was captured."
-        echo "  If dbus-monitor printed an access error, the eavesdrop permission"
-        echo "  is denied and there is nothing this script can do about it."
-        return
-    fi
+    # The application log is the authoritative source here, not the D-Bus
+    # capture. An earlier run showed all-zero GATT call counts and looked like
+    # the phone had never connected - while the application log for the same
+    # window showed a complete weave handshake, a PIN, a payload transfer and
+    # the end of the data. dbus-monitor is not a reliable witness for this
+    # traffic on this machine, so its counts are reported for completeness but
+    # are never the basis for a conclusion.
+    strip() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 
-    local reads writes notifys connects
-
-    reads=$(grep -c "member=ReadValue" "$HCI_LOG")
-    writes=$(grep -c "member=WriteValue" "$HCI_LOG")
-    notifys=$(grep -c "member=StartNotify" "$HCI_LOG")
-    connects=$(grep -c "member=Connect" "$HCI_LOG")
-
-    echo
-    echo "  GATT operations requested by the phone:"
-    printf '    %-34s %s\n' "Device1.Connect" "$connects"
-    printf '    %-34s %s\n' "GattCharacteristic1.ReadValue" "$reads"
-    printf '    %-34s %s\n' "GattCharacteristic1.WriteValue" "$writes"
-    printf '    %-34s %s\n' "GattCharacteristic1.StartNotify" "$notifys"
+    local opened intro payload done_ handshake
+    opened=$(grep -c "weave: notify session open" "$APP_LOG")
+    intro=$(grep -c "INTRODUCTION" "$APP_LOG")
+    payload=$(grep -c "PayloadType::Bytes" "$APP_LOG")
+    done_=$(grep -c "End of data" "$APP_LOG")
+    handshake=$(grep -c "Pin code" "$APP_LOG")
 
     echo
-    echo "  Endpoint slot read (the 118-byte Quick Share endpoint):"
-    grep -B 2 -A 8 "member=ReadValue" "$HCI_LOG" | pretty | head -20 | sed 's/^/    /'
-
-    if [ "$writes" -gt 0 ]; then
-        echo
-        echo "  Weave writes from the phone (characteristic 0101):"
-        grep -B 2 -A 10 "member=WriteValue" "$HCI_LOG" | pretty | head -30 | sed 's/^/    /'
-    fi
-
-    if [ "$notifys" -gt 0 ]; then
-        echo
-        echo "  Notify subscriptions (characteristic 0102):"
-        grep -B 2 -A 4 "member=StartNotify" "$HCI_LOG" | pretty | head -15 | sed 's/^/    /'
-    fi
+    echo "  Weave handshake (from the application log):"
+    printf '    %-38s %s\n' "subscribed to notify (0102)" "$opened"
+    printf '    %-38s %s\n' "INTRODUCTION received" "$intro"
+    printf '    %-38s %s\n' "pairing PIN issued" "$handshake"
+    printf '    %-38s %s\n' "payload bytes received" "$payload"
+    printf '    %-38s %s\n' "end of transfer reached" "$done_"
 
     echo
-    echo "  Notifications delivered to the phone:"
-    grep -c "member=PropertiesChanged" "$HCI_LOG" | sed 's/^/    PropertiesChanged count: /'
+    echo "  D-Bus GATT operations (for completeness; not authoritative):"
+    printf '    %-38s %s\n' "Device1.Connect" "$(grep -c 'member=Connect' "$HCI_LOG" 2>/dev/null || echo 0)"
+    printf '    %-38s %s\n' "GattCharacteristic1.ReadValue" "$(grep -c 'member=ReadValue' "$HCI_LOG" 2>/dev/null || echo 0)"
+    printf '    %-38s %s\n' "GattCharacteristic1.WriteValue" "$(grep -c 'member=WriteValue' "$HCI_LOG" 2>/dev/null || echo 0)"
+    printf '    %-38s %s\n' "GattCharacteristic1.StartNotify" "$(grep -c 'member=StartNotify' "$HCI_LOG" 2>/dev/null || echo 0)"
 
     echo
-    echo "  Application log - weave activity:"
-    if grep -qiE 'weave|session open|InboundRequest' "$APP_LOG"; then
-        grep -iE 'weave|session open|InboundRequest|slot0' "$APP_LOG" \
-            | sed -E 's/\x1b\[[0-9;]*m//g; s/^/    /' | tail -15
+    echo "  Application-side events that reached the UI:"
+    if grep -qiE "emit|notification|state changed|inbound request|transfer" "$APP_LOG"; then
+        strip < "$APP_LOG" | grep -iE "emit|notification|state changed|inbound request|transfer" \
+            | grep -viE "arboard|Gtk-CRIT|appindicator|libayatana" \
+            | tail -12 | cut -c1-150 | sed 's/^/    /'
     else
-        echo "    none - the phone never reached our handler"
+        echo "    none - the wire is alive but the application was told nothing"
     fi
 
     echo
     banner "Reading this"
     cat <<'EOS'
-  Three outcomes, and they mean different things:
+  The counters above are the handshake in order. Where it stops is the bug:
 
-  * Connect 0, ReadValue 0, WriteValue 0
-        The phone never connected to our GATT service. Our service is
-        registered - the script verified that before capturing - so this is a
-        discovery or advertising problem, not a service problem.
+  * subscribed 0
+        The phone never subscribed to the weave notify characteristic. Our
+        advertisement is being seen but not connected to.
 
-  * ReadValue > 0, WriteValue 0, StartNotify 0
-        The phone connected and read our endpoint slot, then stopped without
-        opening a weave session. This is what "connecting..." looks like: the
-        slot read is the discovery step completing, and the weave session that
-        should follow it never happens.
+  * subscribed > 0, INTRODUCTION 0
+        The socket opened but the introduction never came. Weave framing.
 
-  * WriteValue > 0
-        The phone sent weave bytes. If the application log still shows no
-        weave lines, those bytes never reached our handler, which is a bug in
-        our GATT server rather than in the phone.
+  * through PIN, payload 0
+        Pairing completed but no payload arrived. The offer is not reaching us.
+
+  * payload > 0, end of data 0
+        Payload started but never finished. Chunking or framing.
+
+  * end of data > 0, no application events
+        The transfer completed on the wire and the application was not told.
+        This is the failure mode where events were being discarded at the
+        point they were produced, and it is the reason this script reports the
+        application log rather than the D-Bus capture.
 
   Captures kept for reference:
     D-Bus traffic : $HCI_LOG
