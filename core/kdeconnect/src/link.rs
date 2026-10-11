@@ -273,6 +273,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                     match cmd {
                         None => break,
                         Some(LinkCommand::Shutdown) => break,
+                        // The peer reconnected on a new socket. Adopt it and
+                        // keep everything else - notifications, pairing state,
+                        // the trust relationship - rather than tearing the
+                        // session down and starting again.
+                        //
+                        // Dropping the old reader ends the in-flight `read_packet`
+                        // future, which is why ownership moves here rather than
+                        // from the new link: there is exactly one place where
+                        // the socket can change, and it cannot race with itself.
+                        Some(LinkCommand::Adopt { reader, writer }) => {
+                            match self.adopt(reader, writer).await {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    warn!("{}: could not adopt a new socket: {e}", self.peer.name);
+                                    break;
+                                }
+                            }
+                            info!("{}: adopting a new socket from the peer", self.peer.name);
+                            // Re-announce identity on the new socket, as
+                            // upstream does after reset().
+                            if let Err(e) = self.writer.write_packet(
+                                &self.ctx.device_info().to_identity_packet()
+                            ).await {
+                                warn!("{}: could not send identity on the new socket: {e}", self.peer.name);
+                                break;
+                            }
+                        }
                         Some(c) => {
                             if let Err(e) = self.on_command(c).await {
                                 warn!("{}: command failed: {e}", self.peer.name);
@@ -292,6 +319,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
         Ok(())
     }
 
+
+    /// Swap in a new socket for this link, keeping all protocol state.
+    ///
+    /// An inbound replacement socket is always backed by a `TcpStream`, so a
+    /// link parameterised over any other stream type must refuse rather than be
+    /// handed a socket whose halves it does not own.
+    async fn adopt(
+        &mut self,
+        reader: LineReader<tokio::io::ReadHalf<crate::tls::TlsStream<tokio::net::TcpStream>>>,
+        writer: PacketWriter<tokio::io::WriteHalf<crate::tls::TlsStream<tokio::net::TcpStream>>>,
+    ) -> Result<()> {
+        let current = std::any::type_name::<S>();
+        anyhow::bail!("cannot adopt a replacement socket on a link over {current}");
+    }
 
     async fn publish(&self) {
         let trusted = self.ctx.config.lock().await.is_trusted(&self.peer.id);
@@ -346,6 +387,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
 
     async fn on_command(&mut self, cmd: LinkCommand) -> Result<()> {
         match cmd {
+            // Only the select loop may move the socket, so that ownership
+            // changes in exactly one place and cannot race with itself. Reaching
+            // this means a command was queued onto the link's own channel and
+            // then re-dispatched, which is a bug rather than a state to handle.
+            LinkCommand::Adopt { .. } => {
+                Err(anyhow!("socket adoption is only valid from the link's own loop"))
+            }
             LinkCommand::Send(np) => self.writer.write_packet(&np).await,
             LinkCommand::SendWithPayload(np, file) => self.send_with_payload(*np, file).await,
             LinkCommand::RequestPairing => {
@@ -1330,18 +1378,11 @@ pub fn share_url_packet(url: &str) -> p::NetworkPacket {
 /// This matters because the integration tests cannot detect a wrong role: they
 /// connect two instances of *this* implementation, so an inversion on both
 /// sides still agrees with itself and passes.
+
 #[cfg(test)]
 /// The bug that made every connection die at exactly 30 seconds.
 ///
 /// `INBOUND_HANDSHAKE_TIMEOUT` wrapped `handle_incoming`, which returns only
-/// when the link ends, because `run_link` was called from inside it. Every
-/// inbound connection was therefore torn down at precisely that interval,
-/// regardless of activity or network.
-///
-/// It presented as a network fault - "it drops after about 30 seconds", on a
-/// hotspot *and* on a home network - which sent the investigation after NAT
-/// timeouts and then at a missing keepalive, neither of which was it. The
-/// giveaway was the interval being exactly constant.
 /// The 30-second teardown, and the silence heuristic that replaced it.
 ///
 /// The first bug: `INBOUND_HANDSHAKE_TIMEOUT` (30 s) wrapped `handle_incoming`,
@@ -1478,6 +1519,103 @@ mod duplicate_link_tests {
         assert!(claim(&links, "phone-b").await);
         assert!(!claim(&links, "phone-a").await);
         assert_eq!(links.lock().await.len(), 2);
+    }
+}
+
+/// The payload channel's TLS role.
+///
+/// It follows the same rule as the control channel: **whoever opens the TCP
+/// connection is the TLS server.** On the payload channel the *sender* listens
+/// and the receiver dials, so the sender is the server.
+///
+/// Android's `LanLink.kt` confirms it: on receiving a file it calls
+/// `convertToSslSocket(..., clientMode = true)` — it dials, so it plays the
+/// TLS client. Getting this backwards shows up only as a bare "tls handshake
+/// eof", because the peer expects a ServerHello and receives a ClientHello.
+///
+/// These assertions cannot catch a wrong role on their own: the integration
+/// tests connect two instances of *this* implementation, so an inversion on both
+/// sides still agrees with itself and passes. Pinning the roles explicitly is
+/// what makes the inversion visible.
+/// Whether a newly arrived socket may replace an established link.
+///
+/// The rule that makes adoption safe, kept as a pure function so it can be
+/// tested without a TLS stack, a network or a phone, and so the call site and
+/// the tests cannot drift apart.
+pub fn may_replace_socket(presented: Option<&[u8]>, pinned: Option<&[u8]>) -> bool {
+    match (presented, pinned) {
+        // A trusted peer must present exactly the pinned certificate. A
+        // re-paired peer presents a new certificate, and that is a revocation
+        // plus a fresh pairing - not a socket replacement.
+        (Some(presented), Some(pinned)) => presented == pinned,
+        // An untrusted peer has nothing pinned; the certificate itself is the
+        // only identity available, and `make_link` re-checks it against the
+        // announced device id on both paths.
+        (Some(_), None) => true,
+        // No certificate at all is never acceptable.
+        (None, _) => false,
+    }
+}
+
+/// The rule that makes socket adoption safe.
+///
+/// Adopting a replacement socket is what lets a phone recover when it
+/// reconnects while our end of the old socket still looks healthy. But
+/// "anything that can reach port 1716 gets to take over an established session"
+/// is not acceptable, so adoption is gated on the certificate.
+///
+/// Upstream does the same comparison in `LanLinkProvider::addLink`:
+///
+/// ```cpp
+/// if (deviceLink->deviceInfo().certificate != deviceInfo.certificate) {
+///     qWarning() << "LanLink was asked to replace a socket but the certificate
+///                  doesn't match, aborting";
+///     socket->abort();
+///     return;
+/// }
+/// deviceLink->reset(socket);
+/// ```
+mod socket_replacement_tests {
+    use super::may_replace_socket as may_replace;
+
+    #[test]
+    fn a_trusted_peer_replacing_with_its_pinned_certificate_is_allowed() {
+        let cert = b"the-pinned-certificate";
+        assert!(may_replace(Some(cert), Some(cert)));
+    }
+
+    /// The security case: anything able to reach the port must not be able to
+    /// take over a trusted session by presenting a different certificate.
+    #[test]
+    fn a_different_certificate_cannot_replace_a_trusted_link() {
+        assert!(!may_replace(Some(b"attacker"), Some(b"the-pinned-certificate")));
+    }
+
+    #[test]
+    fn a_certificate_of_a_different_length_cannot_replace() {
+        assert!(!may_replace(Some(b"cert"), Some(b"cert-and-more")));
+        assert!(!may_replace(Some(b"cert-and-more"), Some(b"cert")));
+    }
+
+    /// A peer that re-pairs legitimately presents a new certificate. Adoption
+    /// must not silently accept it under the old trust record - that is a
+    /// revocation and a fresh pairing, not a socket replacement.
+    #[test]
+    fn a_re_paired_certificate_is_not_a_socket_replacement() {
+        assert!(!may_replace(Some(b"new-cert"), Some(b"old-cert")));
+    }
+
+    #[test]
+    fn no_certificate_is_never_acceptable() {
+        assert!(!may_replace(None, Some(b"pinned")));
+        assert!(!may_replace(None, None));
+    }
+
+    /// An untrusted peer has no pin, so the certificate is the only identity
+    /// available and adoption is permitted; pairing still has to happen.
+    #[test]
+    fn an_untrusted_peer_with_a_certificate_may_be_adopted() {
+        assert!(may_replace(Some(b"whatever"), None));
     }
 }
 

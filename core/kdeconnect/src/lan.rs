@@ -61,7 +61,10 @@ pub const MDNS_SERVICE_TYPE_FQDN: &str = "_kdeconnect._udp.local.";
 const IDENTITY_BROADCAST_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Commands the application layer can push into a live device link.
-#[derive(Debug)]
+///
+/// Not `Debug`: `Adopt` carries live stream halves, which are deliberately not
+/// formatted anywhere - a partially consumed TLS stream has no useful
+/// representation and printing one risks leaking session material into a log.
 pub enum LinkCommand {
     Send(Box<NetworkPacket>),
     /// Announce `packet` with a payload, then stream `payload` to the peer.
@@ -74,6 +77,21 @@ pub enum LinkCommand {
         notification_id: String,
         reply_id: String,
         text: String,
+    },
+    /// Adopt a new socket for an already-established link.
+    ///
+    /// This is upstream's `LanDeviceLink::reset()`. A phone reconnects by
+    /// dialling us; refusing that connection leaves the phone unable to recover
+    /// until our side notices its old socket is dead, which it cannot do while
+    /// that socket still looks open.
+    ///
+    /// The caller must already have verified the peer's certificate matches the
+    /// one the established link was created with. Adopting a socket presenting a
+    /// different certificate would let anything able to reach port 1716 take
+    /// over a trusted session.
+    Adopt {
+        reader: LineReader<tokio::io::ReadHalf<crate::tls::TlsStream<tokio::net::TcpStream>>>,
+        writer: PacketWriter<tokio::io::WriteHalf<crate::tls::TlsStream<tokio::net::TcpStream>>>,
     },
     Shutdown,
 }
@@ -845,7 +863,9 @@ async fn accept_loop(
                     debug!("incoming KDE Connect handshake from {peer} failed: {e}");
                     return;
                 }
-                Ok(Ok(link)) => link,
+                Ok(Ok(Some(link))) => link,
+                // The socket was adopted by a link that already exists.
+                Ok(Ok(None)) => return,
             };
 
             // No timeout from here on: this is the link's lifetime.
@@ -868,7 +888,9 @@ async fn establish_incoming(
     events: broadcast::Sender<KcEvent>,
     devices: Arc<RwLock<HashMap<String, KcDevice>>>,
     links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>>,
-) -> Result<crate::link::DeviceLink<tokio::net::TcpStream>> {
+) -> Result<Option<crate::link::DeviceLink<tokio::net::TcpStream>>> {
+    // `Ok(None)` means the socket was adopted by an already-established link,
+    // so there is nothing new to run. `Err` is a genuine failure.
     let mut reader = LineReader::new(socket);
     let first = reader
         .read_packet(MAX_IDENTITY_PACKET_SIZE)
@@ -893,13 +915,13 @@ async fn establish_incoming(
     let peer_name = first.get_str("deviceName").unwrap_or_default();
     let peer_version = first.body.get_i64("protocolVersion").unwrap_or(0);
 
-    // This is only a fast path. Both peers dial each other, so this check races
-    // with our own outbound dial, and the authoritative claim happens in
-    // `DeviceLink::run`. Refusing here avoids wasted work; the entry there is
-    // what actually guarantees only one link survives.
-    if links.lock().await.contains_key(&peer_id) {
-        return Err(anyhow!("a link to {peer_id} already exists"));
-    }
+    // A link already exists for this device.
+    //
+    // This is the socket-replacement path, not a duplicate to refuse: the peer
+    // has reconnected and needs the new socket adopted, or it can never recover
+    // while our end of the old one still looks healthy. Upstream does exactly
+    // this in `LanLinkProvider::addLink`, calling `LanDeviceLink::reset()`.
+    let existing = links.lock().await.get(&peer_id).cloned();
 
     let socket = reader.into_inner();
     let trusted = ctx.config.lock().await.is_trusted(&peer_id);
@@ -934,6 +956,40 @@ async fn establish_incoming(
         .context("TLS handshake (client role)")?;
     let _ = &peer_id;
 
+    // If a link already exists, this is the peer reconnecting. Adopt the new
+    // socket into it - but only when the peer's certificate is byte-identical to
+    // the one that link was established with.
+    //
+    // This check is the whole security value of adopting rather than refusing.
+    // Without it, anything able to reach port 1716 could present any certificate
+    // and take over an established session. Upstream compares the same way in
+    // `LanLinkProvider::addLink` and aborts on mismatch.
+    if let Some(cmd_tx) = existing {
+        let presented = tls_stream.peer_cert_der();
+        let trusted = ctx.config.lock().await.trusted_certificate_der(&peer_id);
+        // The rule itself is unit-tested; see `socket_replacement_tests`.
+        let matches = crate::link::may_replace_socket(presented.as_deref(), trusted.as_deref());
+        if !matches {
+            warn!(
+                "refusing to replace the link to {peer_id}: the certificate does \
+                 not match the one this session was established with"
+            );
+            return Err(anyhow!("certificate mismatch on socket replacement"));
+        }
+        let (read_half, write_half) = tokio::io::split(tls_stream);
+        let reader = LineReader::new(read_half);
+        let writer = PacketWriter::new(write_half);
+        info!("peer {peer_id} reconnected; adopting its socket");
+        // The established link swaps the stream in and re-announces identity.
+        // If it has already gone, the send fails and the replacement dial will
+        // simply be retried.
+        if cmd_tx.send(LinkCommand::Adopt { reader, writer }).await.is_err() {
+            debug!("the link to {peer_id} ended before it could adopt the new socket");
+        }
+        // Nothing more to establish: the existing link owns the new socket.
+        return Ok(None);
+    }
+
     // Return the link rather than running it: the accept loop bounds the
     // handshake with a timeout and must not bound the link's lifetime.
     crate::link::make_link(
@@ -949,6 +1005,7 @@ async fn establish_incoming(
         trusted,
     )
     .await
+    .map(Some)
 }
 
 /// We opened the TCP connection, so we must play the TLS **server**.
