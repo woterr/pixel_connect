@@ -335,8 +335,38 @@ async fn main() -> Result<(), anyhow::Error> {
                         return;
                     };
                     let content = clipboard::read_text().unwrap_or(text);
-                    if let Err(e) = kdc::broadcast_clipboard(state.inner(), content).await {
-                        log::error!("could not push the clipboard to the phone: {e}");
+
+                    // Retry briefly when nobody was reachable.
+                    //
+                    // `broadcast_clipboard` only considers devices whose
+                    // link_state is currently Connected, so a copy made while
+                    // the phone happens to be reconnecting is dropped
+                    // permanently - the user copies text, nothing arrives, and
+                    // nothing ever retries it. Measured as
+                    // "broadcast clipboard text to 0 device(s)" moments after
+                    // a working send.
+                    //
+                    // Retrying does not change what is sent or when it is
+                    // trusted; it only tolerates a link that is settling. The
+                    // content is deliberately not logged - it is private.
+                    let mut sent = 0usize;
+                    for attempt in 0..5 {
+                        match kdc::broadcast_clipboard(state.inner(), content.clone()).await {
+                            Ok(n) => sent = n,
+                            Err(e) => log::error!("could not push the clipboard to the phone: {e}"),
+                        }
+                        if sent > 0 {
+                            break;
+                        }
+                        // 250ms, 500ms, 1s, 2s, 4s
+                        let wait = 250u64 << attempt;
+                        tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+                    }
+                    if sent == 0 {
+                        log::warn!(
+                            "the clipboard was not delivered to any device after retrying; \
+                             the phone may be reconnecting or unpaired"
+                        );
                     }
                 });
             });

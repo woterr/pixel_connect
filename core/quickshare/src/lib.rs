@@ -162,7 +162,15 @@ impl QuickShareService {
         let rx_endpoint_id: [u8; 4] = endpoint_id[..4].try_into()?;
         {
             let ctk_ble = ctoken.clone();
-            let msg_sender = self.message_sender.clone();
+            // A dedicated channel, NOT self.message_sender.
+            //
+            // Every InboundRequest subscribes to the channel it was given and
+            // each `recv()` takes the *first* message, so two sessions sharing
+            // one channel steal each other's traffic. With BLE and TCP inbound
+            // both live, an AcceptTransfer sent for one could be consumed by the
+            // other - which is what made "Accept" in the notification appear to
+            // do nothing.
+            let (msg_sender, _) = broadcast::channel(50);
             let hostname = sys_metrics::host::get_hostname().unwrap_or_else(|_| "Pixel Connect".into());
             let endpoint_for_ble = rx_endpoint_id;
             let hostname_gatt = hostname.clone();
