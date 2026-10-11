@@ -178,6 +178,18 @@ pub struct LanLinkProvider {
     links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>>,
     devices: Arc<RwLock<HashMap<String, KcDevice>>>,
     shutdown: Arc<AtomicBool>,
+    /// The one context every task shares.
+    ///
+    /// It used to be built fresh by `link_context()` on each call, which meant
+    /// the outbound-dial guard, the link history, the notification store and
+    /// the inbound-connection cap were *separate instances* per caller. The
+    /// dial guard therefore guarded nothing - each dial checked and set its own
+    /// private set - and the connection cap capped nothing at all, because the
+    /// accept loop held a different semaphore from the one it was counting
+    /// against.
+    ///
+    /// Building it once here is what makes those actually shared.
+    ctx: Arc<LinkContext>,
 }
 
 impl LanLinkProvider {
@@ -211,18 +223,43 @@ impl LanLinkProvider {
             auto_clipboard: AtomicBool::new(true),
         };
 
+        let settings = Arc::new(settings);
+        let links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let devices: Arc<RwLock<HashMap<String, KcDevice>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let identity = Arc::new(ArcSwap::from_pointee(info));
+        let tls = Arc::new(tls_ctx);
+
+        // Built once and shared. See the note on the field.
+        let ctx = Arc::new(LinkContext {
+            config: config.clone(),
+            tls: tls.clone(),
+            identity: identity.clone(),
+            tcp_port: 0,
+            events: events.clone(),
+            devices: devices.clone(),
+            links: links.clone(),
+            settings: settings.clone(),
+            inbound_connections: Arc::new(Semaphore::new(MAX_INBOUND_CONNECTIONS)),
+            link_history: Arc::new(Mutex::new(HashMap::new())),
+            dialing: Arc::new(Mutex::new(HashSet::new())),
+            notifications: Arc::new(Mutex::new(HashMap::new())),
+        });
+
         Ok(Self {
             cert_pem,
             key_pem,
-            tls: Arc::new(tls_ctx),
-            identity: Arc::new(ArcSwap::from_pointee(info)),
+            tls,
+            identity,
             events,
-            settings: Arc::new(settings),
+            settings,
             tcp_port: AtomicU16::new(0),
             config,
-            links: Arc::new(Mutex::new(HashMap::new())),
-            devices: Arc::new(RwLock::new(HashMap::new())),
+            links,
+            devices,
             shutdown: Arc::new(AtomicBool::new(false)),
+            ctx,
         })
     }
 
@@ -423,6 +460,11 @@ impl LanLinkProvider {
     }
 
     pub(crate) fn link_context(&self) -> Arc<LinkContext> {
+        self.ctx.clone()
+    }
+
+    #[allow(dead_code)]
+    fn build_link_context(&self) -> Arc<LinkContext> {
         Arc::new(LinkContext {
             config: self.config.clone(),
             tls: self.tls.clone(),
@@ -440,6 +482,14 @@ impl LanLinkProvider {
     }
 
     pub async fn refresh_devices(&self) {
+        // Drop peers that have gone quiet before deciding whom to dial. Without
+        // this a peer seen once on a network that no longer exists is dialled on
+        // every tick forever, which is how several hundred half-open connections
+        // to a dead address accumulated.
+        let dropped = crate::discovery::expire_stale();
+        if dropped > 0 {
+            debug!("dropped {dropped} discovered peer(s) that stopped announcing");
+        }
         let peers = crate::discovery::snapshot();
         log::debug!("refresh_devices: {} discovered peer(s)", peers.len());
         if peers.is_empty() {

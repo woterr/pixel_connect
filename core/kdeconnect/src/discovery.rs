@@ -28,6 +28,13 @@ pub struct DiscoveredPeer {
     pub tcp_port: u16,
     pub address: IpAddr,
     pub source: &'static str,
+    /// When this peer was last heard from, as a unix timestamp in seconds.
+    ///
+    /// Entries used to live forever, so a peer seen once - on a hotspot that is
+    /// long gone, say - was dialled every refresh tick indefinitely. That is how
+    /// the app accumulated several hundred half-open connections to an address
+    /// that no longer existed.
+    pub last_seen: u64,
 }
 
 struct Registry {
@@ -157,6 +164,7 @@ pub fn note_udp_peer(from: IpAddr, packet: &crate::packet::NetworkPacket) {
         tcp_port: discovery_packet_port(packet).unwrap_or(crate::lan::MIN_TCP_PORT),
         address: from,
         source: "udp",
+        last_seen: now_secs(),
     });
 }
 
@@ -188,6 +196,7 @@ pub fn note_mdns_peer(
         },
         address,
         source: "mdns",
+        last_seen: now_secs(),
     });
 }
 
@@ -208,8 +217,38 @@ pub fn to_device_info(peer: &DiscoveredPeer) -> DeviceInfo {
     }
 }
 
+/// How long a peer stays in the registry after it was last heard from.
+///
+/// The identity broadcast runs every 5 s, so this is generous - it only exists
+/// to drop peers that have genuinely gone rather than to be responsive.
+pub const PEER_TTL_SECS: u64 = 120;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Peers heard from recently enough to be worth connecting to.
+///
+/// Pruning happens here rather than on a timer so there is no background task
+/// to keep alive: a stale entry simply stops being returned, and it is dropped
+/// from the map on the next read.
 pub fn snapshot() -> Vec<DiscoveredPeer> {
-    registry().lock().unwrap().peers.values().cloned().collect()
+    let mut reg = registry().lock().unwrap();
+    let cutoff = now_secs().saturating_sub(PEER_TTL_SECS);
+    reg.peers.retain(|_, p| p.last_seen >= cutoff);
+    reg.peers.values().cloned().collect()
+}
+
+/// Forget peers that have gone quiet. Called on the refresh tick.
+pub fn expire_stale() -> usize {
+    let mut reg = registry().lock().unwrap();
+    let cutoff = now_secs().saturating_sub(PEER_TTL_SECS);
+    let before = reg.peers.len();
+    reg.peers.retain(|_, p| p.last_seen >= cutoff);
+    before - reg.peers.len()
 }
 
 pub fn target(device_id: &str) -> Option<DiscoveredPeer> {
@@ -312,6 +351,73 @@ fn prefix_from_netmask(netmask: Ipv4Addr) -> Option<u8> {
 }
 
 #[cfg(test)]
+/// A peer that stops announcing must stop being dialled.
+///
+/// This was a real resource leak: the registry kept every peer it had ever
+/// seen, and `refresh_devices` dials each one every tick. A phone that had
+/// been on a hotspot and was no longer reachable stayed in the table, so the
+/// app held hundreds of SYN-SENT sockets against an address that no longer
+/// answered.
+mod expiry_tests {
+    use super::*;
+
+    #[test]
+    fn stale_entries_are_dropped_and_fresh_ones_kept() {
+        let mut reg = registry().lock().unwrap();
+        let now = now_secs();
+        reg.peers.insert(
+            "fresh".into(),
+            DiscoveredPeer {
+                device_id: "fresh".into(),
+                name: "Fresh".into(),
+                device_type: Some("phone".into()),
+                protocol_version: 8,
+                tcp_port: 1716,
+                address: "10.0.0.1".parse().unwrap(),
+                source: "udp",
+                last_seen: now,
+            },
+        );
+        reg.peers.insert(
+            "stale".into(),
+            DiscoveredPeer {
+                device_id: "stale".into(),
+                name: "Stale".into(),
+                device_type: Some("phone".into()),
+                protocol_version: 8,
+                tcp_port: 1716,
+                address: "192.168.29.8".parse().unwrap(),
+                source: "udp",
+                // Older than the TTL: this is a hotspot peer that went away.
+                last_seen: now.saturating_sub(PEER_TTL_SECS + 1),
+            },
+        );
+        drop(reg);
+
+        let live = snapshot();
+        let ids: Vec<&str> = live.iter().map(|p| p.device_id.as_str()).collect();
+        assert!(ids.contains(&"fresh"), "a current peer must survive");
+        assert!(
+            !ids.contains(&"stale"),
+            "a peer past its TTL must not be dialled again"
+        );
+
+        // The registry is process-wide, so leaving an entry behind would leak
+        // into other tests that assert on it.
+        registry().lock().unwrap().peers.remove("fresh");
+    }
+
+    #[test]
+    fn the_ttl_outlasts_several_broadcast_intervals() {
+        // The identity broadcast is every 5 s. A TTL shorter than a couple of
+        // intervals would drop healthy peers between announcements.
+        assert!(
+            PEER_TTL_SECS >= 30,
+            "a {PEER_TTL_SECS}s TTL is too tight for a 5s broadcast"
+        );
+    }
+}
+
 mod tests {
     use super::*;
 
