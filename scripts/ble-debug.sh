@@ -93,7 +93,9 @@ analyse() {
     printf '    %-38s %s\n' "peer identified" "$(grep -c 'RemoteDeviceInfo' "$APP_LOG")"
     printf '    %-38s %s\n' "pairing PIN issued" "$(grep -c 'Pin code' "$APP_LOG")"
     printf '    %-38s %s\n' "payload bytes received" "$(grep -c 'PayloadType::Bytes' "$APP_LOG")"
-    printf '    %-38s %s\n' "files offered" "$(grep -c 'PayloadType::File' "$APP_LOG")"
+    # This counts payload CHUNKS, not files. A 395 KB file arrives as 778 of
+    # them, so labelling it "files offered" reads as 778 files being sent.
+    printf '    %-38s %s\n' "file chunks received" "$(grep -c 'PayloadType::File' "$APP_LOG")"
     printf '    %-38s %s\n' "end of transfer reached" "$(grep -c 'End of data' "$APP_LOG")"
 
     echo

@@ -1,14 +1,18 @@
 # Quick Share over Bluetooth — verified on hardware
 
-**Status: PASS.** A Google Pixel 8 shared text to this machine over Bluetooth,
-with no shared network, and the text arrived in the application.
+**Status: PASS.** A Google Pixel 8 shared text **and a file** to this machine
+over Bluetooth, with no shared network, and both arrived.
 
 Verified 2026-10-11 on a Pixel 8 (Android 17, serial `47221VDJH00348`,
-`org.kde.kdeconnect_tp` 1.35.17) against a Fedora GNOME laptop. Capture:
-`/tmp/opencode/ble-debug/run-232814/app.log`.
+`org.kde.kdeconnect_tp` 1.35.17) against a Fedora GNOME laptop. Captures:
 
-This is the first verified end-to-end Bluetooth Quick Share transfer for this
-project. Everything below is quoted from that log.
+- text: `/tmp/opencode/ble-debug/run-232814/app.log`
+- file: `/tmp/opencode/ble-debug/run-233208/app.log`
+
+Both were confirmed by the user, not inferred from the log. This is the first
+verified end-to-end Bluetooth Quick Share for this project.
+
+**The file path works. The speed does not** — see §4.
 
 ---
 
@@ -155,15 +159,87 @@ always used, and the wiring that makes the LAN path work.
 
 ---
 
-## 4. What is still not verified
+## 4. Performance — measured, and poor
+
+The user reported that transfers "took VERY long to even start". The log
+quantifies it. Two separate costs:
+
+| Phase | Elapsed |
+| --- | --- |
+| Discovery (application start → weave session open) | **49 s** |
+| Payload (395,176 bytes, file created → transfer finished) | **65 s** |
+
+**Measured throughput: 5.94 KB/s.** At that rate a 10 MB file takes about
+**29 minutes**.
+
+This is the honest limitation of the current implementation. It is correct,
+not fast.
+
+### What is known and not known about the cause
+
+Known from the code: the weave write characteristic is declared with
+`write_without_response: false`, so every write from the phone is acknowledged.
+A round trip per write costs throughput, and received weave packets of
+100–500 bytes indicate the MTU is negotiated above the 23-byte default, so a
+small MTU is not the explanation.
+
+**Not investigated.** Candidate causes, none confirmed:
+
+- the acknowledged write above,
+- the BLE connection interval, which is left at whatever the controller picks,
+- the Wi-Fi bandwidth upgrade, which was **deliberately not ported** — the
+  payload stays on Bluetooth regardless of the network being available.
+
+Which of these dominates has not been measured. No fix has been attempted, so
+no claim is made about what would help.
+
+**Not verified:** battery impact, range, and behaviour on reconnection.
+
+## 5. The file transfer, in full
+
+From `run-233208`. Route taken: Bluetooth only (`TCP/mDNS (LAN) 0`).
+
+```
+18:03:00  weave: notify session open
+18:03:00  weave: connected (selected=509)
+18:03:00  weave: INTRODUCTION
+18:03:01  File name: Screenshot_20261011-232257.png
+18:03:01  Destination: "/home/user/Downloads/Screenshot_20261011-232257.png"
+18:03:01  Asking for user consent: TransferMetadata { id: "ble-weave", ...
+18:03:01  quickshare offer: Shreyas's Pixel 8 wants to share 1 file
+18:03:03  inbound: got: ChannelMessage { id: "ble-weave", action: Some(AcceptTransfer...
+18:03:03  Created file: File { fd: 38, path: "/home/user/Downloads/Screenshot_...
+18:04:08  Transfer finished
+```
+
+The delivered file was checked independently and is complete, not truncated:
+
+```
+size: 395176 bytes
+PNG image data, 864 x 1920, 8-bit/color RGBA, non-interlaced
+PNG signature ok: True
+ends with IEND: True
+```
+
+A valid PNG with its terminating `IEND` chunk present is the minimum evidence
+that every byte arrived; a truncated transfer would lack it. **Not verified
+beyond that:** the image was not compared against the original, so pixel
+correctness is assumed from the intact container.
+
+### A metric that was wrong
+
+The run report printed `files offered 778`. That is 778 payload **chunks**, not
+778 files — roughly 508 bytes each for one 395 KB file. The counter is now
+labelled `file chunks received`.
+
+## 6. What is still not verified
 
 Stated plainly, because the point of this document is to be trustworthy.
 
-- **A file over Bluetooth is not yet verified.** The run above shared text. A
-  file share follows a different payload path (`PayloadType::File`) and writes
-  to disk. The network route has delivered a 132 KB PNG correctly; the
-  Bluetooth file path has not been exercised.
-- **Transfer latency is not characterised.** Only the coarse timeline above.
+- **Large files are impractical over Bluetooth.** Measured at 5.94 KB/s (§4).
+  Correct but slow. No fix attempted.
+- **Pixel correctness of the delivered image was not checked**, only that the
+  container is intact.
 - **Battery, range and reconnection behaviour over Bluetooth are untested.**
 - **The advertisement is still opt-in** (`PIXEL_CONNECT_BLE_RX=1`). It is off by
   default because advertising `0xFEF3` makes the phone prefer Bluetooth, and
@@ -172,7 +248,7 @@ Stated plainly, because the point of this document is to be trustworthy.
   protocol this build implements, and is logged as unhandled. Non-fatal in this
   run. Its meaning is unknown and has not been guessed at.
 
-## 5. How it was diagnosed
+## 7. How it was diagnosed
 
 `scripts/ble-debug.sh` captures the application's own log and reports which
 route the phone took, how far the handshake got, and what was delivered. It
@@ -184,7 +260,7 @@ and once because it only looked for written files while the phone had shared
 text. Both are fixed; a run that now says "nothing was written" for a text
 share is stating it correctly.
 
-## 6. Regression tests
+## 8. Regression tests
 
 | Test | Pins |
 | --- | --- |
