@@ -471,6 +471,17 @@ impl LanLinkProvider {
             match TcpStream::connect(addr).await {
                 Ok(socket) => {
                     let _ = socket.set_nodelay(true);
+                    // Same as the inbound path: keepalive belongs on the socket,
+                    // set before TLS wraps it.
+                    #[cfg(unix)]
+                    {
+                        use std::os::fd::AsRawFd;
+                        if let Err(e) =
+                            crate::framing::configure_socket_keepalive(socket.as_raw_fd())
+                        {
+                            debug!("could not enable TCP keepalive on an outgoing link: {e}");
+                        }
+                    }
                     if let Err(e) = handle_outgoing(socket, info, addr, ctx).await {
                         debug!("KDE Connect outgoing link to {addr} failed: {e}");
                     }
@@ -602,11 +613,11 @@ pub enum LinkOutcome {
 
 impl LinkContext {
     /// Record how a link ended, so reconnect decisions can use it.
-    pub async fn report_link_end(&self, device_id: &str, idle_for: std::time::Duration) {
+    pub async fn report_link_end(&self, device_id: &str, ran_for: std::time::Duration) {
         // A link that ran for a while is worth retrying; one that died at once
         // is not. The threshold is generous because the first thing a new link
         // does is send its identity.
-        let outcome = if idle_for > std::time::Duration::from_secs(10) {
+        let outcome = if ran_for > std::time::Duration::from_secs(10) {
             LinkOutcome::Dropped
         } else {
             LinkOutcome::Failed
@@ -900,6 +911,19 @@ async fn establish_incoming(
             d.trusted = true;
         })
         .await;
+    }
+
+    // Enable TCP keepalive before TLS wraps the socket, matching upstream
+    // `LanLinkProvider::configureSocket`. The kernel probes an idle link and
+    // eventually reports a peer that has gone, which is what keeps a NAT
+    // mapping open and what detects a silently disconnected phone. Guessing
+    // from application-level silence does not work: an idle phone sends nothing.
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        if let Err(e) = crate::framing::configure_socket_keepalive(socket.as_raw_fd()) {
+            debug!("could not enable TCP keepalive on an incoming link: {e}");
+        }
     }
 
     // TLS client on the accepted socket.

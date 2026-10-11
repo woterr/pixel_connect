@@ -322,6 +322,12 @@ async fn main() -> Result<(), anyhow::Error> {
             // the background; on Wayland it cannot, so the front end pushes
             // changes here instead (see clipboard_capabilities).
             let watcher_handle = handle.clone();
+            // Claim the clipboard here, while still on the main thread. arboard serves
+            // paste requests from a thread it spawns when the handle is created,
+            // so a handle created on a pooled tokio worker can stop answering
+            // and any paste then blocks forever. See `clipboard::warm_up`.
+            clipboard::warm_up();
+
             clipboard::spawn_background_watcher(move |text| {
                 let handle = watcher_handle.clone();
                 tauri::async_runtime::spawn(async move {

@@ -32,24 +32,19 @@ use crate::types::{KcDevice, LinkState, ShareOffer, TransferProgress, Transport}
 /// Cap on the size of an inbound text/URL share we will surface.
 pub const MAX_TEXT_SHARE_BYTES: usize = 256 * 1024;
 
-/// How often the keepalive timer fires.
+/// TCP keepalive parameters, matching upstream `LanLinkProvider::configureSocket`.
 ///
-/// Frequent enough that a mapping is refreshed well inside the window in which
-/// a hotspot will drop it, and slow enough to be invisible: this is one small
-/// packet on a connection that is otherwise idle.
-pub const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+/// The kernel, not this application, decides when a link is dead. Upstream sets
+/// these on every socket so a phone that silently disappears is noticed in about
+/// a minute instead of the system default of roughly two hours, and so NAT
+/// mappings stay open.
+///
+/// Values are upstream's: 30 s before the first probe, 10 s between probes,
+/// 3 failures before the connection is dropped.
+pub const TCP_KEEPALIVE_IDLE_SECS: u32 = 30;
+pub const TCP_KEEPALIVE_INTERVAL_SECS: u32 = 10;
+pub const TCP_KEEPALIVE_COUNT: u32 = 3;
 
-/// Send a ping once the link has been quiet this long.
-///
-/// Below this the peer is either busy or the previous keepalive is still
-/// recent, so another packet would tell us nothing.
-pub const KEEPALIVE_WHEN_IDLE: std::time::Duration = std::time::Duration::from_secs(25);
-
-/// Give up on a link that has sent nothing at all for this long.
-///
-/// Roughly three missed keepalives. The peer answers a ping, so silence this
-/// long means the mapping is gone even though neither end closed the socket.
-pub const LINK_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(75);
 
 /// Bring up a device link on an already-established TLS stream.
 #[allow(clippy::too_many_arguments)]
@@ -130,6 +125,7 @@ where
         peer: peer_info,
         peer_spki,
         peer_cert_pem,
+        started_at: std::time::Instant::now(),
         notifications_sent: false,
         peer_addr,
         trusted,
@@ -169,6 +165,9 @@ pub struct DeviceLink<S: AsyncRead + AsyncWrite + Unpin> {
     ctx: Arc<LinkContext>,
     reader: LineReader<tokio::io::ReadHalf<TlsStream<S>>>,
     writer: PacketWriter<tokio::io::WriteHalf<TlsStream<S>>>,
+    /// When this link was established, so the reconnect logic can tell a link
+    /// that was working from one that never came up.
+    started_at: std::time::Instant,
     /// Whether this link has already answered a `notification.request`.
     ///
     /// Notifications themselves live on `LinkContext`, not here, so they
@@ -189,6 +188,8 @@ pub struct DeviceLink<S: AsyncRead + AsyncWrite + Unpin> {
 
 impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
     pub async fn run(mut self) -> Result<()> {
+        let started_at = std::time::Instant::now();
+
         self.pairing.set_state(if self.trusted {
             PairState::Paired
         } else {
@@ -234,30 +235,30 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
             self.send_clipboard_connect().await;
         }
 
-        // Keep the NAT mapping alive, and notice when the peer has gone.
+        // No application-level keepalive, deliberately.
         //
-        // A phone hotspot drops an idle TCP mapping after roughly half a minute
-        // to a minute. Without traffic the socket stops working while both ends
-        // still believe it is open, which is exactly what was reported: the
-        // link would sit there apparently connected, transfers would fail, and
-        // nothing would reconnect because nothing ever noticed.
+        // An earlier version sent `kdeconnect.ping` when the link went quiet and
+        // declared it dead after 75 s of silence. That was wrong, and it showed:
+        // the phone is content to sit idle for minutes and sends nothing at all,
+        // so a healthy link was torn down about once a minute and rebuilt, and
+        // the phone announced the connection each time.
         //
-        // Transfers kept working because a transfer sends packets continuously,
-        // which refreshes the mapping - so the failure only ever showed up while
-        // idle.
-        let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
-        // The first tick completes immediately; skip it so a link that is
-        // already busy does not immediately send a redundant ping.
-        keepalive.tick().await;
-        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut last_rx = std::time::Instant::now();
+        // Upstream does this at the TCP layer instead.
+        // `LanLinkProvider::configureSocket` sets SO_KEEPALIVE, then
+        // TCP_KEEPIDLE=30, TCP_KEEPINTVL=10, TCP_KEEPCNT=3, so the *kernel*
+        // detects a dead peer in roughly 60 s rather than the application
+        // guessing from silence. Kernel probes also keep a NAT mapping open,
+        // which is why a keepalive was wanted in the first place.
+        //
+        // So a link is now torn down only when the socket reports an end - which
+        // is what `read_packet` returning an error means. Silence proves
+        // nothing, and treating it as proof of death was the bug.
 
         loop {
             tokio::select! {
                 packet = self.reader.read_packet(p::MAX_PACKET_SIZE) => {
                     match packet {
                         Ok(np) => {
-                            last_rx = std::time::Instant::now();
                             if let Err(e) = self.on_packet(np).await {
                                 debug!("{}: packet handling error: {e}", self.peer.name);
                             }
@@ -279,41 +280,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                         }
                     }
                 }
-                _ = keepalive.tick() => {
-                    // Anything from the peer - including its reply to our own
-                    // ping - counts as proof the mapping is alive.
-                    let idle = last_rx.elapsed();
-                    if idle > LINK_STALE_AFTER {
-                        warn!(
-                            "{}: link has been silent for {idle:?}; treating it as dropped",
-                            self.peer.name
-                        );
-                        break;
-                    }
-                    // Ping only when genuinely idle. Pinging during an active
-                    // transfer adds nothing and the peer replies to every ping,
-                    // so this would be pure overhead.
-                    if idle >= KEEPALIVE_WHEN_IDLE {
-                        let mut ping = p::NetworkPacket::new(p::PACKET_TYPE_PING);
-                        ping.set("message", "");
-                        if let Err(e) = self.writer.write_packet(&ping).await {
-                            debug!("{}: keepalive ping failed: {e}", self.peer.name);
-                        }
-                    }
-                }
             }
         }
 
         self.links.lock().await.remove(&self.peer.id);
         self.pairing.cancel();
         self.publish().await;
-        // Record that the peer answered, so the reconnect logic can tell a
-        // link that dropped after working from one that never came up.
         self.ctx
-            .report_link_end(&self.peer.id, last_rx.elapsed())
+            .report_link_end(&self.peer.id, self.started_at.elapsed())
             .await;
         Ok(())
     }
+
 
     async fn publish(&self) {
         let trusted = self.ctx.config.lock().await.is_trusted(&self.peer.id);
@@ -1364,66 +1342,64 @@ pub fn share_url_packet(url: &str) -> p::NetworkPacket {
 /// hotspot *and* on a home network - which sent the investigation after NAT
 /// timeouts and then at a missing keepalive, neither of which was it. The
 /// giveaway was the interval being exactly constant.
-mod inbound_lifetime_tests {
+/// The 30-second teardown, and the silence heuristic that replaced it.
+///
+/// The first bug: `INBOUND_HANDSHAKE_TIMEOUT` (30 s) wrapped `handle_incoming`,
+/// which returns only when the link ends, so every inbound connection died at
+/// exactly 30 s. Reported as "it drops after about 30 seconds"; it was neither a
+/// hotspot problem nor a network problem.
+///
+/// The second bug was mine, and worse for a while: with that fixed, the link went
+/// quiet and I read that as death. The phone sends nothing at all while idle, so
+/// a healthy link was torn down about once a minute - and the phone announced the
+/// reconnection each time. Silencing the symptom by reconnecting faster made the
+/// churn worse.
+///
+/// Upstream `LanLinkProvider::configureSocket` settles it: keepalive belongs at
+/// the TCP layer (SO_KEEPALIVE, TCP_KEEPIDLE=30, TCP_KEEPINTVL=10, TCP_KEEPCNT=3),
+/// where the kernel detects a dead peer in about a minute. An application must
+/// not infer death from silence.
+mod link_lifetime_tests {
     use super::*;
-    use std::time::Duration;
 
-    /// The handshake budget must be short enough to hold a slot briefly, but
-    /// it is a *handshake* budget and must never gate a live connection.
+    /// The handshake budget bounds the handshake only, and must be shorter than
+    /// upstream's ~60 s detection window - a longer handshake budget would kill
+    /// links before the kernel had a chance to notice a dead one.
     #[test]
-    fn the_handshake_budget_is_not_a_link_budget() {
-        assert!(crate::lan::INBOUND_HANDSHAKE_TIMEOUT <= Duration::from_secs(30));
-    }
-
-    /// The keepalive must be more patient than the old 30 s teardown, or a
-    /// link would still be killed before it could be kept alive.
-    #[test]
-    fn the_keepalive_outlives_the_old_teardown_interval() {
-        assert!(
-            LINK_STALE_AFTER > Duration::from_secs(30),
-            "a stale-link timeout at or below 30s would reproduce the original \
-             symptom even with a working keepalive"
+    fn the_handshake_budget_is_shorter_than_upstreams_detection_window() {
+        // Upstream: 30 s idle + 10 s interval x 3 probes = ~60 s to detect death.
+        let upstream_detection = Duration::from_secs(
+            (crate::link::TCP_KEEPALIVE_IDLE_SECS
+                + crate::link::TCP_KEEPALIVE_INTERVAL_SECS * crate::link::TCP_KEEPALIVE_COUNT)
+                as u64,
         );
-    }
-
-    /// A link must outlive any handshake budget.
-    ///
-    /// The teardown that caused the 30-second disconnect was `INBOUND_HANDSHAKE_TIMEOUT`
-    /// wrapping the whole link. The handshake itself needs only seconds - it is
-    /// one identity packet and a TLS exchange - while a link legitimately lives
-    /// for hours. If these two ever converge again, the symptom returns
-    /// unchanged, so pin the relationship explicitly rather than trusting that
-    /// nobody will move a timeout inwards.
-    #[test]
-    fn a_link_is_not_bounded_by_the_handshake_budget() {
-        // The handshake is bounded by a *constant*, and links are bounded by
-        // the keepalive instead. Neither is derived from the other.
         assert_eq!(
             crate::lan::INBOUND_HANDSHAKE_TIMEOUT,
             Duration::from_secs(30)
         );
         assert!(
-            LINK_STALE_AFTER > crate::lan::INBOUND_HANDSHAKE_TIMEOUT,
-            "a stale link must be given longer than the handshake budget, or \
-             the handshake timeout becomes the de facto link lifetime"
+            crate::lan::INBOUND_HANDSHAKE_TIMEOUT < upstream_detection,
+            "the handshake budget must not outlast the kernel's own detection"
+        );
+    }
+
+    /// The keepalive timings are upstream's, and they must actually add up to
+    /// detection in about a minute. Changing them silently would bring back the
+    /// multi-minute hang this replaced.
+    #[test]
+    fn keepalive_detects_a_dead_peer_within_about_a_minute() {
+        assert_eq!(crate::link::TCP_KEEPALIVE_IDLE_SECS, 30);
+        assert_eq!(crate::link::TCP_KEEPALIVE_INTERVAL_SECS, 10);
+        assert_eq!(crate::link::TCP_KEEPALIVE_COUNT, 3);
+        let total = crate::link::TCP_KEEPALIVE_IDLE_SECS
+            + crate::link::TCP_KEEPALIVE_INTERVAL_SECS * crate::link::TCP_KEEPALIVE_COUNT;
+        assert!(
+            (50..=70).contains(&total),
+            "detection takes {total}s; upstream aims at about 60"
         );
     }
 }
 
-/// The bug that made transfers stop halfway and produced a "connected"
-/// notification every 30 seconds.
-///
-/// Both peers dial each other: we dial on every refresh tick, the phone dials
-/// when it sees our identity broadcast. Two links for the same device could
-/// therefore be built simultaneously, and `HashMap::insert` replaced the
-/// existing sender rather than yielding. Dropping the older link's sender closed
-/// its command channel, so its `cmd_rx.recv()` returned `None` and it broke out
-/// of its loop - mid-transfer. The phone saw the drop and reconnected, and the
-/// cycle repeated.
-///
-/// This reproduces the mechanism directly: a sender replaced by a second
-/// `insert` leaves the first receiver with `None`, which is exactly what the
-/// loop treats as "shut down".
 mod duplicate_link_tests {
     use super::*;
     use std::collections::hash_map::Entry;
@@ -1541,51 +1517,6 @@ mod payload_role_tests {
             control_accepter,
             "receiver dials, like the control accepter"
         );
-    }
-}
-
-#[cfg(test)]
-mod keepalive_tests {
-    use super::*;
-    use std::time::Duration;
-
-    /// A hotspot drops an idle NAT mapping in roughly 30-60s, so the keepalive
-    /// has to fire well inside that or it protects nothing.
-    #[test]
-    fn the_keepalive_fires_well_inside_a_hotspot_idle_timeout() {
-        assert!(
-            KEEPALIVE_INTERVAL < Duration::from_secs(30),
-            "a 20s interval must stay under a typical hotspot idle timeout"
-        );
-    }
-
-    /// The ping must not be sent before the link looks idle, or a busy link
-    /// carries pointless traffic and the peer replies to every one of them.
-    #[test]
-    fn a_ping_is_only_sent_once_the_link_is_quiet() {
-        assert!(
-            KEEPALIVE_WHEN_IDLE > KEEPALIVE_INTERVAL,
-            "the idle threshold must exceed one interval, or a ping is sent \
-             every tick regardless of activity"
-        );
-    }
-
-    /// Silence must be tolerated for longer than one keepalive period, or a
-    /// single slow reply tears the link down.
-    #[test]
-    fn silence_is_tolerated_for_several_intervals() {
-        assert!(
-            LINK_STALE_AFTER >= KEEPALIVE_INTERVAL * 2,
-            "one missed reply must not be treated as a dead link"
-        );
-    }
-
-    /// The mapping is what dies, so the thresholds must be ordered: notice
-    /// stillness before giving up, and ping before deciding it is idle.
-    #[test]
-    fn the_thresholds_are_ordered() {
-        assert!(KEEPALIVE_WHEN_IDLE < LINK_STALE_AFTER);
-        assert!(KEEPALIVE_INTERVAL < KEEPALIVE_WHEN_IDLE);
     }
 }
 

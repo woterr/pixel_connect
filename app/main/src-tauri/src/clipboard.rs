@@ -173,6 +173,14 @@ pub fn read_text() -> Option<String> {
 /// per poll produced thousands of identical warnings an hour and turned a
 /// transient condition into unbounded log growth. One handle, reused, keeps the
 /// fallback notice to a single line at start-up.
+///
+/// The handle must be created on a thread that lives as long as the process.
+/// `arboard` owns the X11 selection and answers `SelectionRequest` from a
+/// background thread it spawns for the creating thread; if that is a pooled
+/// tokio worker, the worker can be reused or shut down, the owning process stops
+/// answering, and a paste blocks forever - which is what freezing an application
+/// on paste looked like. `warm_up` claims the handle on the main thread for this
+/// reason.
 fn x11_clipboard() -> Option<&'static std::sync::Mutex<Option<arboard::Clipboard>>> {
     use std::sync::{Mutex, OnceLock};
     static HANDLE: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
@@ -329,23 +337,17 @@ pub fn set_image_from_file(path: &std::path::Path) -> Result<bool, String> {
     }
 }
 
-/// Hand an RGBA image to the clipboard, reusing the cached handle.
+/// Hand an RGBA image to the clipboard.
 ///
-/// The handle is cached for the same reason the text path caches it: building
-/// one per call logs a Wayland fallback warning every time, and the watcher
-/// runs often.
+/// Deliberately shares the one cached handle with the text path rather than
+/// keeping a second. `arboard` answers selection requests from a background
+/// thread belonging to the thread that created the handle, so two handles means
+/// two competing owners and a paste can wait forever on the loser.
 fn place_image(width: usize, height: usize, pixels: Vec<u8>) -> Result<(), arboard::Error> {
-    use std::sync::Mutex;
-    static HANDLE: std::sync::OnceLock<Mutex<Option<arboard::Clipboard>>> =
-        std::sync::OnceLock::new();
-    let cell = HANDLE.get_or_init(|| Mutex::new(None));
-
+    let cell = x11_clipboard().ok_or(arboard::Error::ContentNotAvailable)?;
     let mut guard = cell
         .lock()
         .map_err(|_| arboard::Error::ContentNotAvailable)?;
-    if guard.is_none() {
-        *guard = arboard::Clipboard::new().ok();
-    }
     guard
         .as_mut()
         .ok_or(arboard::Error::ContentNotAvailable)?
@@ -354,6 +356,23 @@ fn place_image(width: usize, height: usize, pixels: Vec<u8>) -> Result<(), arboa
             height,
             bytes: pixels.into(),
         })
+}
+
+/// Claim the clipboard handle on the main thread, before any worker can.
+///
+/// `arboard` spawns the thread that serves paste requests when the handle is
+/// created, and ties it to that thread. If the first caller happens to be a
+/// pooled tokio worker, the owning thread may later be reused for unrelated work
+/// and stop answering, and every paste then blocks forever - the application
+/// appeared to freeze. Creating the handle on the main thread, which lives as
+/// long as the process, removes that possibility.
+pub fn warm_up() {
+    if matches!(
+        ClipboardMechanism::detect(),
+        ClipboardMechanism::X11 | ClipboardMechanism::WaylandX11Bridge
+    ) {
+        let _ = x11_clipboard();
+    }
 }
 
 /// The clipboard the application last applied locally, so it can be echoed back
