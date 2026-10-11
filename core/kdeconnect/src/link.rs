@@ -54,8 +54,8 @@ pub const TCP_KEEPALIVE_COUNT: u32 = 3;
 /// timeout and then run the link without one. When both were in one function the
 /// timeout necessarily covered the link's lifetime, and every connection died
 /// at exactly that interval.
-pub async fn make_link<S>(
-    stream: TlsStream<S>,
+pub async fn make_link(
+    stream: TlsStream<tokio::net::TcpStream>,
     peer_id: String,
     peer_name: String,
     peer_version: i64,
@@ -65,10 +65,7 @@ pub async fn make_link<S>(
     links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>>,
     events: broadcast::Sender<KcEvent>,
     trusted: bool,
-) -> Result<DeviceLink<S>>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<DeviceLink<tokio::net::TcpStream>> {
     if peer_version < p::PROTOCOL_VERSION {
         return Err(anyhow!(
             "{peer_name} speaks KDE Connect protocol {peer_version}; this build requires {}",
@@ -138,8 +135,8 @@ where
 }
 
 /// Complete the handshake and run the link to completion.
-pub async fn run_link<S>(
-    stream: TlsStream<S>,
+pub async fn run_link(
+    stream: TlsStream<tokio::net::TcpStream>,
     peer_id: String,
     peer_name: String,
     peer_version: i64,
@@ -149,10 +146,7 @@ pub async fn run_link<S>(
     links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>>,
     events: broadcast::Sender<KcEvent>,
     trusted: bool,
-) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<()> {
     make_link(
         stream, peer_id, peer_name, peer_version, peer_addr, ctx, devices, links, events, trusted,
     )
@@ -186,7 +180,18 @@ pub struct DeviceLink<S: AsyncRead + AsyncWrite + Unpin> {
     last_clipboard_ts: i64,
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
+/// A link whose underlying socket may be replaced by a reconnecting peer.
+///
+/// Implemented only for the concrete stream type that inbound connections can
+/// actually produce. Calling `adopt` on any other `DeviceLink` is a compile
+/// error at the call site if the type is concrete, and returns a clear error at
+/// runtime through the blanket fallback below.
+impl DeviceLink<tokio::net::TcpStream> {
+    /// Run the link to completion.
+    ///
+    /// Constrained to `TcpStream` because that is the only instantiation that
+    /// can receive an inbound replacement socket, and the Adopt command is
+    /// only ever sent to an inbound link.
     pub async fn run(mut self) -> Result<()> {
         let started_at = std::time::Instant::now();
 
@@ -283,7 +288,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                         // from the new link: there is exactly one place where
                         // the socket can change, and it cannot race with itself.
                         Some(LinkCommand::Adopt { reader, writer }) => {
-                            match self.adopt(reader, writer).await {
+                            match self.adopt(reader, writer) {
                                 Ok(()) => {}
                                 Err(e) => {
                                     warn!("{}: could not adopt a new socket: {e}", self.peer.name);
@@ -322,16 +327,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
 
     /// Swap in a new socket for this link, keeping all protocol state.
     ///
-    /// An inbound replacement socket is always backed by a `TcpStream`, so a
-    /// link parameterised over any other stream type must refuse rather than be
-    /// handed a socket whose halves it does not own.
-    async fn adopt(
+    /// Assigning drops the old halves, which makes any in-flight
+    /// `read_packet` future complete with an error - the same signal the select
+    /// loop already treats as "this socket ended". The old socket therefore
+    /// cannot deliver a message after ownership has moved.
+    fn adopt(
         &mut self,
         reader: LineReader<tokio::io::ReadHalf<crate::tls::TlsStream<tokio::net::TcpStream>>>,
         writer: PacketWriter<tokio::io::WriteHalf<crate::tls::TlsStream<tokio::net::TcpStream>>>,
     ) -> Result<()> {
-        let current = std::any::type_name::<S>();
-        anyhow::bail!("cannot adopt a replacement socket on a link over {current}");
+        self.reader = reader;
+        self.writer = writer;
+        Ok(())
     }
 
     async fn publish(&self) {

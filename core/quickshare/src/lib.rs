@@ -8,6 +8,7 @@ use anyhow::anyhow;
 use channel::ChannelMessage;
 #[cfg(all(feature = "experimental", target_os = "linux"))]
 use hdl::BleAdvertiser;
+use hdl::{ReceiverAdvertiser, ReceiverGattServer};
 use hdl::MDnsDiscovery;
 use once_cell::sync::Lazy;
 use rand::distr::Alphanumeric;
@@ -146,6 +147,61 @@ impl QuickShareService {
                 let ctk = ctoken.clone();
                 tracker.spawn(async move { ble.run(ctk).await });
             }
+        }
+
+        // Quick Share *receiver* discovery over BLE.
+        //
+        // Google Quick Share drops the phone off Wi-Fi while it browses, so an
+        // mDNS-only receiver is invisible during exactly the moment the user is
+        // looking for targets. The phone is then left holding only a BLE
+        // endpoint, which is what these two serve.
+        //
+        // The `endpoint_id` must be the same four bytes mDNS uses, or the two
+        // resolve to two different endpoints and the phone sees a target it
+        // cannot reach.
+        let rx_endpoint_id: [u8; 4] = endpoint_id[..4].try_into()?;
+        {
+            let ctk_ble = ctoken.clone();
+            let msg_sender = self.message_sender.clone();
+            let hostname = sys_metrics::host::get_hostname().unwrap_or_else(|_| "Pixel Connect".into());
+            let endpoint_for_ble = rx_endpoint_id;
+            let hostname_gatt = hostname.clone();
+            tracker.spawn(async move {
+                // GATT first: a connectable advertisement is only useful once
+                // something is there to connect to.
+                // slot0 returns exactly the bytes the advertisement carries.
+                let advertisement =
+                    hdl::receiver_service_data(endpoint_for_ble, 3, &hostname_gatt);
+                match ReceiverGattServer::new(
+                    advertisement,
+                    msg_sender.clone(),
+                    0,
+                )
+                .await
+                {
+                    Ok(gatt) => {
+                        if let Err(e) = gatt.run(ctk_ble.clone()).await {
+                            error!("ReceiverGattServer ended: {e}");
+                        }
+                    }
+                    Err(e) => error!(
+                        "could not start the Quick Share BLE GATT service, so the \
+                         phone cannot discover this machine over Bluetooth: {e}"
+                    ),
+                }
+            });
+            let ctk_adv = ctoken.clone();
+            let hostname_for_adv = hostname.clone();
+            tracker.spawn(async move {
+                match ReceiverAdvertiser::new(endpoint_for_ble, 3, &hostname_for_adv).await {
+                    Ok(adv) => {
+                        if let Err(e) = adv.run(ctk_adv).await {
+                            error!("ReceiverAdvertiser ended: {e}");
+                        }
+                    }
+                    Err(e) => error!("could not start the Quick Share BLE advertiser: {e}"),
+                }
+            });
         }
 
         // Start MDnsServer in own "task"

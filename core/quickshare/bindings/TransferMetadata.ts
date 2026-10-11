@@ -2,4 +2,12 @@
 import type { RemoteDeviceInfo } from "./RemoteDeviceInfo";
 import type { TextPayloadType } from "./TextPayloadType";
 
-export type TransferMetadata = { id: string, source: RemoteDeviceInfo | null, pin_code: string | null, destination: string | null, files: Array<string> | null, text_type: TextPayloadType | null, text_description: string | null, text_payload: string | null, total_bytes: bigint, ack_bytes: bigint, };
+export type TransferMetadata = { id: string, source: RemoteDeviceInfo | null, pin_code: string | null, destination: string | null, files: Array<string> | null, text_type: TextPayloadType | null, text_description: string | null, text_payload: string | null, total_bytes: bigint, ack_bytes: bigint, 
+/**
+ * Where received files were actually saved, filled in as each completes.
+ *
+ * The application cannot work this out for itself: the metadata carries
+ * only file *names*, and the download folder may be changed between the
+ * transfer starting and each file arriving.
+ */
+saved_paths: Array<string>, };

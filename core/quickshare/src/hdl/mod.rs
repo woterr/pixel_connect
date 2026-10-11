@@ -12,8 +12,11 @@ use crate::utils::RemoteDeviceInfo;
 mod ble;
 #[cfg(feature = "experimental")]
 pub use ble::*;
+pub use blea::ReceiverAdvertiser;
+pub use gatt::ReceiverGattServer;
 #[cfg(all(feature = "experimental", target_os = "linux"))]
 mod blea;
+mod gatt;
 #[cfg(all(feature = "experimental", target_os = "linux"))]
 pub use blea::*;
 mod inbound;
