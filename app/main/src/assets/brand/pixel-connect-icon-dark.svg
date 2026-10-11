@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108" role="img" aria-label="Pixel Connect">
+  <defs>
+    <linearGradient id="tmain" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#303030"/>
+      <stop offset="1" stop-color="#000000"/>
+    </linearGradient>
+    <linearGradient id="gmain" x1="13" y1="0" x2="95" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#808080"/>
+      <stop offset="0.16" stop-color="#303030"/>
+      <stop offset="0.5" stop-color="#000000"/>
+      <stop offset="0.84" stop-color="#303030"/>
+      <stop offset="1" stop-color="#808080"/>
+    </linearGradient>
+    <mask id="mmain" maskUnits="userSpaceOnUse" x="0" y="0" width="108" height="108">
+      <rect x="0" y="0" width="108" height="108" fill="#ffffff"/>
+      <path d="M36.5 69C47.88 69 46.5 61.5 54 54C61.5 46.5 60.12 39 71.5 39" fill="none" stroke="#000000" stroke-width="21.5px"/>
+    </mask>
+  </defs>
+  <rect x="0" y="0" width="108" height="108" rx="26" fill="url(#tmain)"/>
+  <g transform="matrix(0.92, 0, 0, 0.92, 4.32, 4.32)" fill="none" stroke="#FFFFFF" stroke-width="11.5px" stroke-linejoin="round">
+      <path d="M87.61 48.14A17.5 15 0 0 1 71.5 69C60.12 69 61.5 61.5 54 54C46.5 46.5 47.88 39 36.5 39A17.5 15 0 0 0 20.39 59.86" mask="url(#mmain)"/>
+      <path d="M29.66 67.81A17.5 15 0 0 0 36.5 69C47.88 69 46.5 61.5 54 54C61.5 46.5 60.12 39 71.5 39A17.5 15 0 0 1 78.34 40.19"/>
+  </g>
+</svg>

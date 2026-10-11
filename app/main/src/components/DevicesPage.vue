@@ -1,25 +1,53 @@
 <script setup lang="ts">
 // Pixel Connect — Devices view.
 //
-// The unified device overview required by the V1 spec. Every field shown here
-// comes from the backend:
+// Every field shown here comes from the backend. Nothing is inferred, and
+// nothing is reported as working that the backend has not reported.
 //
-//   identity, available protocols, pairing state, connection state, features,
-//   transport, errors and recovery actions.
+// Each peer is one compact row carrying what someone acts on — name, type,
+// pairing state, real connection state, transport — plus a single primary
+// action for the current state and a menu of everything else. Protocol detail
+// sits behind the menu, because it is diagnostic rather than actionable.
 //
-// Anything the backend has not implemented is shown as "unavailable" rather
-// than as a working control.
+// The mapping from backend state to wording lives in `./deviceRow`, which is
+// pure and unit-tested; this file is the view over it.
 
 import { computed, ref } from 'vue'
 
 import PcIcon from './atoms/PcIcon.vue'
+import { compareDevices, deviceRow } from './deviceRow'
 import { useAppStore } from '../stores/app'
 import * as api from '../api'
-import { deviceTypeLabel, timeAgo } from '../utils'
+import { timeAgo } from '../utils'
 import type { KcDevice, WirelessTarget } from '../types'
 
 const store = useAppStore()
+
+/**
+ * In-flight action, as `<deviceId>:<action>`.
+ *
+ * Keyed per device and per action so one slow device never freezes the whole
+ * list, and so a button can disable *only itself*. This is what stops a
+ * second Pair click firing a duplicate request while the first is in flight.
+ */
 const busy = ref<string | null>(null)
+
+function isBusy(deviceId: string, action: string): boolean {
+	return busy.value === `${deviceId}:${action}`
+}
+
+/** Rows whose menu/details panel is open. */
+const openRows = ref<string[]>([])
+
+function toggleRow(id: string) {
+	const i = openRows.value.indexOf(id)
+	if (i === -1) openRows.value.push(id)
+	else openRows.value.splice(i, 1)
+}
+
+function isOpen(id: string): boolean {
+	return openRows.value.includes(id)
+}
 
 const FEATURE_LABELS: Record<string, string> = {
 	clipboard: 'Clipboard sync',
@@ -35,72 +63,56 @@ function featureLabel(f: string): string {
 	return FEATURE_LABELS[f] ?? f
 }
 
-/**
- * The connection state, in the order someone acts on it.
- *
- * A connected device is never labelled "Not paired", whatever the trust store
- * says: a link that is carrying traffic is connected, and claiming otherwise
- * sends the user looking for a pairing button that is not the problem. Trust
- * is reported separately, because the two genuinely differ — the phone may
- * tolerate an unpaired link while this app has not been told to trust it.
- */
-function stateLabel(d: KcDevice): string {
-	if (d.linkState === 'Connected') return `Connected over ${d.transport}`
-	if (d.linkState === 'Connecting') return 'Connecting…'
-	if (d.linkState === 'PairingRequested') return 'Pairing requested'
-	if (d.linkState === 'PairingRequestedByPeer') return 'Pairing requested by the phone'
-	if (d.trusted) return 'Paired, not connected'
-	return 'Not paired'
+function iconFor(t: string): string {
+	if (t === 'lan') return 'wifi'
+	if (t === 'bluetooth') return 'bluetooth'
+	if (t === 'wifiDirect') return 'wifiOff'
+	return 'link'
+}
+
+function deviceIcon(type: string): string {
+	if (type === 'phone') return 'phone'
+	if (type === 'tablet') return 'monitor'
+	if (type === 'tv') return 'monitor'
+	return 'link'
 }
 
 /**
- * True when the link is up but the device is not in the trust store.
- *
- * Worth calling out separately, because it looks like a contradiction on
- * screen: transfers work, yet the app does not consider the phone paired.
- * That happens when the phone is paired with *another* KDE Connect
- * implementation - each keeps its own trust store - so the phone accepts the
- * connection while this app has nothing to pin a certificate against.
+ * The device list, sorted so anything needing a decision is at the top, with
+ * each entry already reduced to its row model.
  */
-function isUntrustedButConnected(d: KcDevice): boolean {
-	return d.linkState === 'Connected' && !d.trusted
+const rows = computed(() => {
+	const preferred = store.settings?.preferredDeviceId ?? store.preferredDevice?.id ?? null
+	return [...store.devices]
+		.sort(compareDevices)
+		.map((d: KcDevice) =>
+			deviceRow(d, {
+				busy: busy.value !== null && busy.value.startsWith(`${d.id}:`),
+				preferredId: preferred,
+				defaultId: preferred,
+			}),
+		)
+})
+
+/** Devices with a verification code to confirm, shown outside the menu. */
+function deviceFor(id: string): KcDevice | undefined {
+	return store.devices.find((d: KcDevice) => d.id === id)
 }
 
 /**
- * The one line under the device name.
+ * Run one action on one device.
  *
- * Connection state is what someone acts on, so that leads. Battery is appended
- * only when the phone actually reports it, because the field is absent until a
- * `kdeconnect.battery` packet arrives and showing a bare "0%" reads as "the
- * phone is dead" when it really means "no data yet".
+ * A single `busy` key covers the whole call, so the row's own button and any
+ * menu entry for the same device cannot both be used while it is running.
  */
-function headline(d: KcDevice): string {
-	const parts = [stateLabel(d)]
-	if (d.batteryLevel !== null && d.batteryLevel !== undefined) {
-		parts.push(`${d.batteryLevel}%${d.batteryIsCharging ? ' ⚡' : ''}`)
-	}
-	// Say so, rather than leaving "Connected" to imply everything is fine.
-	// Transfers work because the phone tolerates the link, not because this app
-	// has pinned a certificate for it.
-	if (isUntrustedButConnected(d)) parts.push('not paired here')
-	if (!d.trusted) parts.unshift(deviceTypeLabel(d.type))
-	return parts.join(' · ')
-}
-
-function stateTone(d: KcDevice): string {
-	if (d.linkState === 'Connected') return 'bg-online'
-	if (d.linkState === 'Connecting') return 'bg-warn animate-pulse'
-	if (d.trusted) return 'bg-faint'
-	return 'bg-danger'
-}
-
-async function act(device: KcDevice, action: 'pair' | 'accept' | 'reject' | 'unpair' | 'ping' | 'mirroring') {
+async function act(device: KcDevice, action: string) {
 	busy.value = `${device.id}:${action}`
 	try {
 		switch (action) {
 			case 'pair':
+				// "Requested", not "paired": the phone still has to confirm.
 				await api.kdeRequestPairing(device.id)
-				store.toast(`Pairing request sent to ${device.name}`)
+				store.toast(`Pairing requested from ${device.name}`)
 				break
 			case 'accept':
 				await api.kdeAcceptPairing(device.id)
@@ -118,14 +130,17 @@ async function act(device: KcDevice, action: 'pair' | 'accept' | 'reject' | 'unp
 				await api.kdePing(device.id, 'Pixel Connect')
 				store.toast(`Ping sent to ${device.name}`, 'success')
 				break
-			case 'mirroring': {
+			case 'retry':
+				await api.kdeRefresh()
+				store.toast(`Asked the backend to reconnect to ${device.name}`, 'info')
+				break
+			case 'mirroring':
 				await mirrorScreen(device)
 				return
-			}
 		}
-		store.refreshAll()
+		await store.refreshAll()
 	} catch (e) {
-		store.toast(`Action failed: ${e}`, 'error')
+		store.toast(`That action failed: ${e}`, 'error')
 	} finally {
 		busy.value = null
 	}
@@ -174,7 +189,7 @@ async function mirrorScreen(device: KcDevice) {
 			attached === 0
 				? 'Connect the phone by USB and enable USB debugging to mirror its screen.'
 				: ready.length > 1
-					? `Several devices are attached (${ready.map((d) => d.label).join(', ')}). Choose one below.`
+					? `Several devices are attached (${ready.map((d) =>d.label).join(', ')}). Choose one below.`
 					: 'The attached device is not ready for scrcpy. Check the USB debugging authorisation prompt.',
 			'error',
 		)
@@ -238,207 +253,221 @@ async function stopScrcpy(serial: string) {
 	store.scrcpySessions = await api.scrcpyRunning()
 }
 
+const refreshing = ref(false)
+
 async function refreshDevices() {
-	await api.kdeRefresh()
-	await store.refreshAll()
-	store.toast('Re-scanned the network', 'success')
+	refreshing.value = true
+	try {
+		await api.kdeRefresh()
+		await store.refreshAll()
+	} catch (e) {
+		store.toast(`Could not rescan: ${e}`, 'error')
+	} finally {
+		refreshing.value = false
+	}
 }
 
-function iconFor(t: string): string {
-	if (t === 'lan') return 'wifi'
-	if (t === 'bluetooth') return 'bluetooth'
-	if (t === 'wifiDirect') return 'wifiOff'
-	return 'link'
-}
-
-const discovered = computed(() => store.devices)
 const adb = computed(() => store.adbDevices)
 </script>
 
 <template>
 	<div class="pc-scroll flex-1 px-6 pb-28 pt-6 sm:px-10 lg:px-14 lg:pb-12">
-		<header class="flex items-center justify-between">
-			<div>
+		<header class="flex items-start justify-between gap-4">
+			<div class="min-w-0">
 				<h2 class="pc-display text-4xl">Devices</h2>
 				<p class="mt-2 text-sm text-muted">
 					KDE Connect protocol v{{ store.info?.kdeconnectProtocol ?? 8 }} over the local network
 				</p>
 			</div>
-			<button class="pc-btn pc-btn-secondary pc-btn-md" @click="refreshDevices">
-				<PcIcon name="refresh" :size="16" />
-				Refresh
+			<button
+				class="pc-btn pc-btn-secondary pc-btn-md shrink-0"
+				:disabled="refreshing"
+				@click="refreshDevices"
+			>
+				<PcIcon name="refresh" :size="16" :class="refreshing ? 'animate-spin' : ''" />
+				{{ refreshing ? 'Scanning…' : 'Refresh' }}
 			</button>
 		</header>
 
-		<!-- KDE Connect devices -->
-		<section class="mt-10">
-			<h3 class="pc-eyebrow mb-4">Network devices</h3>
+		<!-- KDE Connect peers -->
+		<section class="mt-8">
+			<div class="mb-3 flex items-baseline justify-between gap-4">
+				<h3 class="pc-eyebrow">Network devices</h3>
+				<span class="text-xs text-faint">
+					{{ rows.length }} seen · {{ store.connectedDevices.length }} connected
+				</span>
+			</div>
 
-			<div v-if="discovered.length" class="space-y-4">
-				<article
-					v-for="device in discovered"
-					:key="device.id"
-					class="pc-card p-6"
-				>
-					<div class="flex flex-wrap items-start justify-between gap-4">
-						<div class="flex items-center gap-3">
-							<span class="pc-status-dot" :class="stateTone(device)" />
-							<div>
-								<h4 class="text-lg font-semibold">{{ device.name }}</h4>
-								<p class="text-sm text-muted">{{ headline(device) }}</p>
-							</div>
-						</div>
-						<div class="flex flex-wrap gap-2">
-							<button
-								v-if="!device.trusted && device.linkState !== 'PairingRequestedByPeer'"
-								class="pc-btn pc-btn-primary pc-btn-sm"
-								:disabled="busy === `${device.id}:pair`"
-								@click="act(device, 'pair')"
-							>
-								Pair
-							</button>
-							<template v-if="device.linkState === 'PairingRequestedByPeer'">
-								<button
-									class="pc-btn pc-btn-primary pc-btn-sm"
-									:disabled="busy === `${device.id}:accept`"
-									@click="act(device, 'accept')"
-								>
-									Accept
-									<span v-if="device.verificationKey" class="ml-1 tabular-nums">
-										{{ device.verificationKey }}
-									</span>
-								</button>
-								<button
-									class="pc-btn pc-btn-secondary pc-btn-sm"
-									@click="act(device, 'reject')"
-								>
-									Reject
-								</button>
-							</template>
-							<button
-								v-if="device.trusted"
-								class="pc-btn pc-btn-secondary pc-btn-sm"
-								@click="act(device, 'ping')"
-							>
-								Ping
-							</button>
-							<button
-								v-if="device.trusted"
-								class="pc-btn pc-btn-ghost pc-btn-sm"
-								@click="act(device, 'unpair')"
-							>
-								Unpair
-							</button>
-						</div>
-					</div>
-
-					<!-- pairing verification key -->
-					<div
-						v-if="device.linkState === 'PairingRequestedByPeer' && device.verificationKey"
-						class="pc-inset mt-4 px-4 py-3 text-sm"
+			<div v-if="rows.length" class="space-y-2">
+				<div v-for="row in rows" :key="row.id">
+					<!-- One row per peer. -->
+					<article
+						class="pc-row"
+						:data-active="row.status === 'connected'"
+						:data-testid="`device-row-${row.id}`"
 					>
-						Confirm that the phone shows the same code:
-						<span class="ml-2 font-mono text-base font-bold tracking-widest">
-							{{ device.verificationKey }}
+						<PcIcon :name="deviceIcon(row.typeLabel.toLowerCase())" :size="20" class="text-muted" />
+
+						<div class="pc-row__body">
+							<div class="flex items-center gap-2">
+								<h4 class="truncate font-semibold">{{ row.name }}</h4>
+								<span class="pc-pill" :data-tone="row.tone">{{ row.statusLabel }}</span>
+							</div>
+							<p class="truncate text-sm text-muted">{{ row.detail }}</p>
+						</div>
+
+						<span
+							v-if="row.transportLabel"
+							class="hidden shrink-0 items-center gap-1.5 text-xs text-faint sm:flex"
+						>
+							<PcIcon :name="iconFor(row.transport === 'lan' ? 'wifi' : '')" :size="14" />
+							{{ row.transportLabel }}
 						</span>
-					</div>
+
+						<button
+							class="pc-btn pc-btn-sm shrink-0"
+							:class="row.primary.emphasis ? 'pc-btn-primary' : 'pc-btn-secondary'"
+							:disabled="row.primary.busy"
+							@click="act(deviceFor(row.id)!, row.primary.id)"
+						>
+							{{ row.primary.label }}
+						</button>
+
+						<button
+							class="pc-btn pc-btn-ghost h-9 w-9 shrink-0 p-0"
+							:aria-expanded="isOpen(row.id)"
+							:aria-label="`More actions for ${row.name}`"
+							@click="toggleRow(row.id)"
+						>
+							<PcIcon name="settings" :size="16" />
+						</button>
+					</article>
 
 					<!--
-						Protocol-level detail (transport, address, device id, the
-						capability chips) is diagnostic, not something a user needs
-						to act on. It is hidden behind a toggle so the card shows
-						only what someone would use to decide what to do next.
+						Pairing code confirmation. Deliberately outside the menu: it
+						is a security decision and must not be hidden behind a
+						disclosure the user may never open.
 					-->
-					<details class="mt-4">
-						<summary class="cursor-pointer text-xs text-faint hover:text-muted">
-							Connection details
-						</summary>
-						<dl class="mt-3 grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2">
+					<div
+						v-if="row.status === 'pairingByPeer' && deviceFor(row.id)?.verificationKey"
+						class="mt-1 flex flex-wrap items-center gap-3 rounded-xl bg-inset px-4 py-3 text-sm"
+					>
+						<span class="text-muted">
+							{{ row.name }} wants to pair. Check this code matches the phone:
+						</span>
+						<span class="font-mono text-lg font-bold tracking-[0.3em]">
+							{{ deviceFor(row.id)?.verificationKey }}
+						</span>
+						<button
+							class="pc-btn pc-btn-secondary pc-btn-sm ml-auto"
+							:disabled="isBusy(row.id, 'reject')"
+							@click="act(deviceFor(row.id)!, 'reject')"
+						>
+							Reject
+						</button>
+					</div>
+
+					<!-- Secondary actions + protocol detail. -->
+					<div v-if="isOpen(row.id)" class="pc-menu">
+						<div class="flex flex-wrap gap-2 px-1 pb-2">
+							<button
+								v-if="row.canPing && row.status !== 'connected'"
+								class="pc-btn pc-btn-secondary pc-btn-sm"
+								:disabled="isBusy(row.id, 'ping')"
+								@click="act(deviceFor(row.id)!, 'ping')"
+							>
+								<PcIcon name="send" :size="14" /> Ping
+							</button>
+							<button
+								v-if="row.canBeDefault && !row.isDefault"
+								class="pc-btn pc-btn-ghost pc-btn-sm"
+								@click="setPreferred(deviceFor(row.id)!)"
+							>
+								<PcIcon name="link" :size="14" /> Make default
+							</button>
+							<span v-else-if="row.isDefault" class="pc-chip self-center">
+								<PcIcon name="check" :size="12" /> Default device
+							</span>
+							<button
+								class="pc-btn pc-btn-ghost pc-btn-sm"
+								@click="act(deviceFor(row.id)!, 'mirroring')"
+							>
+								<PcIcon name="monitor" :size="14" /> Mirror screen
+							</button>
+							<button
+								v-if="row.canUnpair"
+								class="pc-btn pc-btn-ghost pc-btn-sm"
+								:disabled="isBusy(row.id, 'unpair')"
+								@click="act(deviceFor(row.id)!, 'unpair')"
+							>
+								<PcIcon name="unlink" :size="14" /> Unpair
+							</button>
+						</div>
+
+						<dl class="grid gap-x-8 gap-y-2 border-t border-ink-line px-1 pt-3 text-sm sm:grid-cols-2">
 							<div class="flex justify-between gap-4">
-								<dt class="text-muted">Transport</dt>
-								<dd class="text-right font-medium">{{ device.transport }}</dd>
+								<dt class="text-muted">Device id</dt>
+								<dd class="truncate text-right font-mono text-xs">{{ row.id }}</dd>
 							</div>
 							<div class="flex justify-between gap-4">
 								<dt class="text-muted">Address</dt>
-								<dd class="truncate text-right font-medium">{{ device.address ?? '—' }}</dd>
+								<dd class="truncate text-right font-medium">{{ deviceFor(row.id)?.address ?? '—' }}</dd>
 							</div>
 							<div class="flex justify-between gap-4">
 								<dt class="text-muted">Protocol</dt>
-								<dd class="text-right font-medium">v{{ device.protocolVersion }}</dd>
+								<dd class="text-right font-medium">v{{ deviceFor(row.id)?.protocolVersion }}</dd>
 							</div>
 							<div class="flex justify-between gap-4">
 								<dt class="text-muted">Last seen</dt>
-								<dd class="text-right font-medium">{{ timeAgo(device.lastSeen) }}</dd>
-							</div>
-							<div class="flex justify-between gap-4">
-								<dt class="text-muted">Device id</dt>
-								<dd class="truncate text-right font-mono text-xs">{{ device.id }}</dd>
+								<dd class="text-right font-medium">{{ timeAgo(deviceFor(row.id)?.lastSeen) }}</dd>
 							</div>
 						</dl>
-						<div v-if="device.features.length" class="mt-3 flex flex-wrap gap-2">
-							<span v-for="f in device.features" :key="f" class="pc-chip">
+
+						<p
+							v-if="deviceFor(row.id)?.features.length"
+							class="flex flex-wrap gap-2 px-1 pt-3"
+						>
+							<span
+								v-for="f in deviceFor(row.id)!.features"
+								:key="f"
+								class="pc-chip"
+							>
 								{{ featureLabel(f) }}
 							</span>
-						</div>
-					</details>
+						</p>
 
-					<!-- errors / recovery -->
-					<div
-						v-if="device.protocolError"
-						class="mt-5 flex items-start gap-3 rounded-xl bg-danger/10 px-4 py-3 text-sm text-danger"
-					>
-						<PcIcon name="alert" :size="16" class="mt-0.5" />
-						<div>
-							<p class="font-semibold">Connection problem</p>
-							<p class="mt-1">{{ device.protocolError }}</p>
-							<button
-								class="pc-btn pc-btn-secondary pc-btn-sm mt-3"
-								@click="refreshDevices"
-							>
-								Try again
-							</button>
-						</div>
-					</div>
-
-					<div class="mt-5 flex gap-2">
-						<button
-							class="pc-btn pc-btn-ghost pc-btn-sm"
-							@click="setPreferred(device)"
+						<p
+							v-if="deviceFor(row.id)?.protocolError"
+							class="mt-3 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger"
 						>
-							<PcIcon :name="store.settings?.preferredDeviceId === device.id ? 'check' : 'link'" :size="14" />
-							{{ store.settings?.preferredDeviceId === device.id
-								? 'Default device'
-								: 'Make default' }}
-						</button>
-						<button
-							class="pc-btn pc-btn-ghost pc-btn-sm"
-							:disabled="!device.features.includes('ping') && device.linkState !== 'Connected'"
-							@click="act(device, 'mirroring')"
-						>
-							<PcIcon name="monitor" :size="14" />
-							Mirror screen
-						</button>
+							<PcIcon name="alert" :size="16" class="mt-0.5" />
+							<span>{{ deviceFor(row.id)?.protocolError }}</span>
+						</p>
 					</div>
-				</article>
+				</div>
 			</div>
 
 			<div v-else class="pc-card px-6 py-10 text-center">
 				<PcIcon name="wifi" :size="28" class="mx-auto text-faint" />
 				<p class="mt-3 font-semibold">No devices found yet</p>
-				<p class="mt-1 text-sm text-muted">
-					Pixel Connect is listening on the local network. Make sure the phone is on the
-					same Wi-Fi and has KDE Connect open, then refresh.
+				<p class="mx-auto mt-1 max-w-md text-sm text-muted">
+					Nothing has been discovered on the local network yet. The phone has to be on the
+					same network with its KDE Connect app open — being switched on is not enough for
+					it to appear here.
 				</p>
 				<button class="pc-btn pc-btn-secondary pc-btn-md mt-5" @click="refreshDevices">
 					<PcIcon name="refresh" :size="16" />
 					Scan again
 				</button>
+				<p class="mt-4 text-xs text-faint">
+					Not finding anything? The Help page covers the usual causes.
+				</p>
 			</div>
 		</section>
 
 		<!-- ADB / scrcpy -->
-		<section class="mt-14">
-			<div class="flex items-center justify-between">
+		<section class="mt-12">
+			<div class="flex items-center justify-between gap-4">
 				<h3 class="pc-eyebrow">Android over USB or Wi-Fi</h3>
 				<span class="text-xs text-faint">
 					{{ store.tools?.adbPath ? 'adb detected' : 'adb not found' }} ·
@@ -446,7 +475,7 @@ const adb = computed(() => store.adbDevices)
 				</span>
 			</div>
 
-			<div class="pc-card mt-4 px-6 py-5">
+			<div class="pc-card mt-3 px-6 py-5">
 				<div class="flex flex-wrap items-center justify-between gap-3">
 					<div>
 						<p class="font-semibold">Wireless</p>
@@ -493,7 +522,7 @@ const adb = computed(() => store.adbDevices)
 				</div>
 			</div>
 
-<div v-if="store.tools?.error" class="pc-card mt-4 px-6 py-5 text-sm">
+			<div v-if="store.tools?.error" class="pc-card mt-3 px-6 py-5 text-sm">
 				<div class="flex items-start gap-3">
 					<PcIcon name="alert" :size="18" class="mt-0.5 text-warn" />
 					<div>
@@ -506,7 +535,7 @@ const adb = computed(() => store.adbDevices)
 				</div>
 			</div>
 
-			<div v-if="adb.length" class="mt-4 space-y-3">
+			<div v-if="adb.length" class="mt-3 space-y-2">
 				<div
 					v-for="device in adb"
 					:key="device.serial"
@@ -550,19 +579,19 @@ const adb = computed(() => store.adbDevices)
 
 			<p v-else-if="!store.tools?.error" class="mt-4 text-sm text-faint">
 				No ADB devices detected. Connect the phone over USB with USB debugging enabled, or
-				start a wireless session with <code>adb connect</code>.
+				start a wireless session with <code class="pc-code">adb connect</code>.
 			</p>
 		</section>
 
 		<!-- transports, straight from the backend registry -->
-		<section class="mt-14">
-			<div class="flex items-center justify-between">
+		<section class="mt-12">
+			<div class="flex items-center justify-between gap-4">
 				<h3 class="pc-eyebrow">Connection methods</h3>
 				<span class="text-xs text-faint">reported by the backend</span>
 			</div>
 
-			<div class="mt-4 space-y-3">
-				<div v-for="t in store.transports" :key="t.transport" class="pc-card px-6 py-5">
+			<div class="mt-3 space-y-2">
+				<div v-for="t in store.transports" :key="t.transport" class="pc-card px-6 py-4">
 					<div class="flex flex-wrap items-center justify-between gap-3">
 						<div class="flex items-center gap-2">
 							<PcIcon
@@ -573,18 +602,21 @@ const adb = computed(() => store.adbDevices)
 							<p class="font-semibold">{{ t.name }}</p>
 						</div>
 						<span
-							class="pc-chip"
-							:class="{
-								'text-online border-online/40': t.state === 'available',
-								'text-warn border-warn/40': t.state === 'unverified',
-							}"
+							class="pc-pill"
+							:data-tone="
+								t.state === 'available'
+									? 'online'
+									: t.state === 'unverified'
+										? 'warn'
+										: 'idle'
+							"
 						>
 							{{ t.state === 'available' ? 'Available' : t.state === 'unverified' ? 'Unverified' : 'Not implemented' }}
 						</span>
 					</div>
 
 					<p class="mt-2 text-sm text-muted">{{ t.summary }}</p>
-					<p v-if="t.blocker" class="mt-3 text-sm leading-relaxed text-faint">
+					<p v-if="t.blocker" class="mt-2 text-sm leading-relaxed text-faint">
 						{{ t.blocker }}
 					</p>
 				</div>
@@ -592,7 +624,7 @@ const adb = computed(() => store.adbDevices)
 
 			<p class="mt-4 text-xs text-faint">
 				Nothing above is claimed to work unless the backend has exercised it. Findings and
-				measurements are in <code>docs/architecture/v2-transport-findings.md</code>.
+				measurements are in <code class="pc-code">docs/architecture/v2-transport-findings.md</code>.
 			</p>
 		</section>
 	</div>
