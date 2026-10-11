@@ -194,6 +194,14 @@ impl DeviceLink<tokio::net::TcpStream> {
     /// only ever sent to an inbound link.
     pub async fn run(mut self) -> Result<()> {
         let started_at = std::time::Instant::now();
+        // Set when the peer hands us a replacement socket. The `select!` below
+        // has an in-flight `read_packet` future holding the *old* reader; when
+        // we swap it out, that future completes with an error which means "the
+        // socket we just replaced ended", not "the new socket failed".
+        //
+        // Without this, adoption tears the link down on the same tick and the
+        // peer reconnects again immediately - a 5 s loop.
+        let mut adopted_since_read = false;
 
         self.pairing.set_state(if self.trusted {
             PairState::Paired
@@ -269,6 +277,15 @@ impl DeviceLink<tokio::net::TcpStream> {
                             }
                         }
                         Err(e) => {
+                            if std::mem::take(&mut adopted_since_read) {
+                                // The error came from the socket we replaced.
+                                debug!(
+                                    "{}: old socket closed after the peer reconnected ({e}); \
+                                     continuing on the new one",
+                                    self.peer.name
+                                );
+                                continue;
+                            }
                             debug!("{}: link read ended: {e}", self.peer.name);
                             break;
                         }
@@ -289,21 +306,23 @@ impl DeviceLink<tokio::net::TcpStream> {
                         // the socket can change, and it cannot race with itself.
                         Some(LinkCommand::Adopt { reader, writer }) => {
                             match self.adopt(reader, writer) {
-                                Ok(()) => {}
+                                Ok(()) => {
+                                    adopted_since_read = true;
+                                }
                                 Err(e) => {
                                     warn!("{}: could not adopt a new socket: {e}", self.peer.name);
                                     break;
                                 }
                             }
                             info!("{}: adopting a new socket from the peer", self.peer.name);
-                            // Re-announce identity on the new socket, as
-                            // upstream does after reset().
-                            if let Err(e) = self.writer.write_packet(
-                                &self.ctx.device_info().to_identity_packet()
-                            ).await {
-                                warn!("{}: could not send identity on the new socket: {e}", self.peer.name);
-                                break;
-                            }
+                            // Deliberately NO identity re-announcement.
+                            //
+                            // Upstream's LanDeviceLink::reset() swaps the socket
+                            // and re-wires the signals, and that is all it does.
+                            // Sending an unsolicited identity here makes Android
+                            // treat it as a fresh connection announcement, so it
+                            // dials us again - measured at exactly one reconnect
+                            // per identity broadcast, a 5 second loop.
                         }
                         Some(c) => {
                             if let Err(e) = self.on_command(c).await {
