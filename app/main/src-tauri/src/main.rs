@@ -358,6 +358,25 @@ async fn main() -> Result<(), anyhow::Error> {
                         if sent > 0 {
                             break;
                         }
+
+                        // Nobody had an open link, and retrying alone cannot
+                        // fix that: the clipboard is sent over an existing link
+                        // and never opens one. The phone only holds a link
+                        // while it is busy, so a copy made while it was idle was
+                        // lost for good. Ask for the link, then try again.
+                        //
+                        // connect_to_peer refuses peers that are connected or
+                        // already dialling, so this cannot start a duplicate.
+                        if attempt == 0 {
+                            let asked = kdc::wake_trusted_devices(state.inner()).await;
+                            if asked > 0 {
+                                log::info!(
+                                    "opened a link to {asked} trusted device(s) to carry the \
+                                     clipboard"
+                                );
+                            }
+                        }
+
                         // 250ms, 500ms, 1s, 2s, 4s
                         let wait = 250u64 << attempt;
                         tokio::time::sleep(std::time::Duration::from_millis(wait)).await;

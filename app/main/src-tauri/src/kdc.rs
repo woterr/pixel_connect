@@ -410,6 +410,12 @@ pub async fn broadcast_clipboard(state: &KdcState, content: String) -> Result<us
     svc.broadcast_clipboard(content).await
 }
 
+/// Ask the provider to open links to trusted peers that have none.
+pub async fn wake_trusted_devices(state: &KdcState) -> usize {
+    let svc = state.service.lock().await;
+    svc.wake_trusted_devices().await
+}
+
 pub async fn request_pairing(state: &KdcState, device_id: &str) -> Result<()> {
     let svc = state.service.lock().await;
     svc.request_pairing(device_id).await

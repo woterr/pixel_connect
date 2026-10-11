@@ -165,6 +165,41 @@ impl KdeConnectService {
     ///
     /// The caller owns clipboard access (Wayland restricts background
     /// processes), which is why the content is passed in rather than read here.
+    /// Open a link to every trusted peer that does not currently have one.
+    ///
+    /// `broadcast_clipboard` only considers devices whose link_state is already
+    /// Connected - it sends over an open link and never opens one. The Pixel
+    /// holds a KDE Connect TCP link only while it has something to do, so a
+    /// copy made while the phone was idle matched no device and was dropped
+    /// permanently. Measured: "broadcast clipboard text to 1 device(s)" and
+    /// then "0 device(s)" while the same TCP connection was ESTABLISHED the
+    /// whole time - the link existed at the kernel but not in the device map.
+    ///
+    /// Dialling is the provider's existing, guarded path (`connect_to_peer`),
+    /// which refuses peers that are connected or already dialling, so this is
+    /// safe to call on every failed clipboard attempt.
+    ///
+    /// Returns how many peers were asked to connect.
+    pub async fn wake_trusted_devices(&self) -> usize {
+        let mut asked = 0;
+        for device in self.devices().await {
+            if !device.trusted || device.link_state == LinkState::Connected {
+                continue;
+            }
+            let Some(peer) = crate::discovery::target(&device.id) else {
+                trace!(
+                    "clipboard: cannot wake {} - no live discovery entry for it",
+                    device.name
+                );
+                continue;
+            };
+            self.provider.connect_to_peer(&peer).await;
+            asked += 1;
+            trace!("clipboard: dialled {} to carry the clipboard", device.name);
+        }
+        asked
+    }
+
     pub async fn broadcast_clipboard(&self, content: String) -> Result<usize> {
         let mut sent = 0;
         for device in self.devices().await {
