@@ -183,6 +183,22 @@ impl ReceiverAdvertiser {
                 max_interval: Some(std::time::Duration::from_millis(150)),
                 ..Default::default()
             };
+            // A non-connectable companion advertising set was tried here, to
+            // let the phone see us during the first pass of its scan rather
+            // than only the second. BlueZ refuses it outright:
+            //
+            //     could not advertise the non-connectable companion set
+            //     (Bluetooth operation failed: Failed to parse advertisement.)
+            //
+            // The endpoint data is 118 bytes and a legacy advertising payload
+            // is 31. The connectable set is accepted because it is permitted to
+            // carry more; the non-connectable one is not. Shrinking the payload
+            // is not an option - its layout is fixed by the protocol.
+            //
+            // So discovery cost is not reducible this way on this adapter, and
+            // the remaining levers are the advertisement interval and keeping
+            // the application running so it is always advertising.
+
             match self.adapter.advertise(adv).await {
                 Ok(handle) => {
                     tokio::select! {

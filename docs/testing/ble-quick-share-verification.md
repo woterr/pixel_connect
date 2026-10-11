@@ -232,7 +232,96 @@ The run report printed `files offered 778`. That is 778 payload **chunks**, not
 778 files — roughly 508 bytes each for one 395 KB file. The counter is now
 labelled `file chunks received`.
 
-## 6. What is still not verified
+## 6. Discovery latency
+
+The 49 s in §4 is **not all machine time**. The advertisement was live from the
+moment the application started; after that the user still had to read the
+script's output, open the share sheet, find the computer and tap it. A single
+run cannot separate those, so **the machine-side figure is not known** and the
+49 s should not be quoted as pure discovery latency.
+
+What was examined, and what it showed.
+
+### Advertisement interval — already fast
+
+The connectable set already advertises at 100–150 ms, deliberately faster than
+BlueZ's ~1–2 s default. There is little left here; going faster trades power
+for latency and the specification's floor is far below what the controller will
+use in practice.
+
+### A non-connectable companion set — rejected by BlueZ
+
+The standard technique for faster Android discovery is to advertise a
+non-connectable set alongside the connectable one. Android's scanner runs two
+passes, looking for non-connectable devices first and connectable ones second;
+advertising only as connectable means the computer is invisible during the first
+pass.
+
+This was implemented and **BlueZ refuses it**:
+
+```
+could not advertise the non-connectable companion set
+(Bluetooth operation failed: Failed to parse advertisement.)
+```
+
+The endpoint data is 118 bytes and a legacy advertising payload is 31. The
+connectable set is accepted because it may carry more; the non-connectable one
+is not, and the payload layout is fixed by the protocol so it cannot be
+shrunk. The attempt was reverted rather than left in place emitting a warning
+every 30 seconds. **Discovery cost is not reducible this way on this adapter.**
+
+The error was initially invisible because the first implementation discarded it
+with `.ok()`. Replacing that with a logged error is what revealed the cause, and
+it is the behaviour the rest of this codebase follows.
+
+### Start at login — the setting existed and did nothing
+
+The dominant factor is not on the air at all: **a Quick Share receiver is only
+discoverable over Bluetooth while this application is running**, because the
+advertisement comes from us. If the share sheet is opened before the
+application has been started, there is nothing to find and the phone waits for
+a target that cannot appear.
+
+`tauri-plugin-autostart` was initialised at start-up and then **never used** —
+no code path called `enable()`. The `autostart` setting was stored and offered
+in the interface but had no effect whatsoever. On this machine there was no
+saved `settings.json`, so the default was the only thing in play.
+
+Both are fixed: the setting is applied at start-up, and it now defaults to on.
+A failure to apply it is logged with the consequence spelled out, because
+silently not registering would leave discovery broken in a way nothing else
+would reveal.
+
+**Verified** on this machine — the plugin wrote the entry and the setting round
+trips:
+
+```
+start at login is on (autostart registered as false)
+```
+```
+~/.config/autostart/Pixel Connect.desktop
+  Exec=/home/user/.local/bin/pixel-connect
+```
+
+**A caveat that matters for upgrades.** Settings are persisted, so the new
+default only reaches installations that have no stored value. This machine had
+`"autostart": false` saved from an earlier run and kept the old behaviour until
+it was changed by hand. Existing users will keep start-at-login off, and the
+setting has to be flipped in the interface. Changing a default cannot reach
+people who have already run the application once.
+
+**Not verified:** any improvement in measured latency. The claim that this makes
+discovery faster is not established — what is established is that the computer
+is discoverable without having been launched first.
+
+### A note on the other autostart entry
+
+`~/.config/autostart/` also contains `kdeconnect.desktop`, so stock KDE
+Connect starts at login too. That is a separate finding from the duplication
+already recorded elsewhere, and is left alone: removing another program's
+autostart entry is not this project's decision to make.
+
+## 7. What is still not verified
 
 Stated plainly, because the point of this document is to be trustworthy.
 
@@ -248,7 +337,7 @@ Stated plainly, because the point of this document is to be trustworthy.
   protocol this build implements, and is logged as unhandled. Non-fatal in this
   run. Its meaning is unknown and has not been guessed at.
 
-## 7. How it was diagnosed
+## 8. How it was diagnosed
 
 `scripts/ble-debug.sh` captures the application's own log and reports which
 route the phone took, how far the handshake got, and what was delivered. It
@@ -260,7 +349,7 @@ and once because it only looked for written files while the phone had shared
 text. Both are fixed; a run that now says "nothing was written" for a text
 share is stating it correctly.
 
-## 8. Regression tests
+## 9. Regression tests
 
 | Test | Pins |
 | --- | --- |

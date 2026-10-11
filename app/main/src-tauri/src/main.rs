@@ -38,7 +38,7 @@ use pixel_connect_quickshare::{EndpointInfo, QuickShareService, SendInfo, Visibi
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, WindowEvent};
-use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::adb::AdbState;
@@ -146,6 +146,44 @@ async fn main() -> Result<(), anyhow::Error> {
         .setup(|app| {
             set_up_logging(app.app_handle())?;
             let handle = app.app_handle().clone();
+
+            // ---- start at login -------------------------------------------
+            //
+            // The autostart plugin was initialised and then never used: nothing
+            // called enable(), so the `autostart` setting was stored and shown
+            // in the interface but did nothing at all.
+            //
+            // This matters well beyond convenience. A Quick Share receiver is
+            // only discoverable over Bluetooth while this application is
+            // running, because the advertisement comes from us. If the phone's
+            // share sheet is opened before the application has been started,
+            // there is nothing on the air to find and the phone waits for a
+            // target that will never appear. Applying the setting is what makes
+            // discovery reliable rather than dependent on the user happening to
+            // have launched the application first.
+            {
+                let want = settings::load(&app.app_handle()).autostart;
+                let launcher = app.autolaunch();
+                let current = launcher.is_enabled().unwrap_or(false);
+                let outcome = match (want, current) {
+                    (true, false) => launcher.enable(),
+                    (false, true) => launcher.disable(),
+                    _ => Ok(()),
+                };
+                match outcome {
+                    Ok(()) => info!(
+                        "start at login is {} (autostart registered as {current})",
+                        if want { "on" } else { "off" }
+                    ),
+                    Err(e) => warn!(
+                        "could not apply the start-at-login setting (wanted \
+                         {want}, currently {current}): {e}. A Quick Share \
+                         receiver is only discoverable over Bluetooth while this \
+                         application runs, so sharing may be unavailable until it \
+                         is started."
+                    ),
+                }
+            }
 
             // ---- settings -------------------------------------------------
             let s = settings::load(&handle);

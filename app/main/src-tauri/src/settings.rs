@@ -72,7 +72,11 @@ impl Default for Settings {
         Self {
             realclose: false,
             startminimized: false,
-            autostart: false,
+            // On by default. A Quick Share receiver is only discoverable over
+            // Bluetooth while this application is running, so starting at
+            // login is what makes it discoverable at all without the user
+            // having to launch it first.
+            autostart: true,
             visibility: 0,
             port: None,
             download_folder: None,
