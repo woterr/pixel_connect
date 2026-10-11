@@ -98,13 +98,32 @@ analyse() {
 
     echo
     echo "  What was delivered:"
-    if grep -q 'Created file' "$APP_LOG"; then
-        strip < "$APP_LOG" | grep -oE 'path: "[^"]+"' | sed 's/^/    /'
-        echo "    (the path above is a staging path; check your Downloads folder)"
+    # Every payload kind, not just files. Checking only for "Created file"
+    # reported a successful text share as "nothing was written", which is how
+    # a transfer that worked end to end looked like a total failure.
+    local files texts finished
+    files=$(grep -c 'Created file' "$APP_LOG")
+    texts=$(grep -c 'text_metadata' "$APP_LOG")
+    finished=$(grep -c 'Transfer finished' "$APP_LOG")
+
+    printf '    %-38s %s\n' "text shares" "$texts"
+    printf '    %-38s %s\n' "file shares" "$files"
+    printf '    %-38s %s\n' "transfers finished" "$finished"
+
+    if [ "$finished" -gt 0 ]; then
+        echo "    THE TRANSFER SUCCEEDED. Nothing else in this report matters."
+    fi
+
+    if [ "$files" -gt 0 ]; then
+        echo
+        strip < "$APP_LOG" | grep -oE 'Destination: "[^"]+"' | sed 's/^/    /'
         echo "    newest in Downloads:"
         ls -lt "$HOME/Downloads" 2>/dev/null | head -4 | sed 's/^/      /'
-    else
-        echo "    nothing was written"
+    fi
+
+    if [ "$texts" -gt 0 ] && [ "$files" -eq 0 ]; then
+        echo "    (a text share writes no file; it arrives as text for the"
+        echo "     application to show. 'nothing was written' is correct here.)"
     fi
 
     echo
