@@ -86,7 +86,11 @@ const QS_SERVICE_UUID: u16 = 0xFEF3;
 // 3-byte hash of the "NearbySharing" service id (matches the mDNS _FC9F5ED42C8A type).
 const QS_SVC_HASH: [u8; 3] = [0xfc, 0x9f, 0x5e];
 // endpoint_info identity bytes (2-byte salt + 14-byte metadata-key hash).
-const QS_EINFO_IDENTITY: [u8; 16] = [
+/// endpoint_info identity: 2-byte salt + 14-byte metadata-key hash.
+///
+/// Shared with `gen_mdns_endpoint_info` so the BLE and mDNS views of this
+/// endpoint carry the same identity and Android reconciles them into one entry.
+pub const QS_EINFO_IDENTITY: [u8; 16] = [
     0x4a, 0x22, 0x71, 0x16, 0x9c, 0x15, 0x99, 0xa2, 0x44, 0xaf, 0x44, 0xb0, 0x17, 0x9c, 0x0f, 0x23,
 ];
 // Connections advertisement trailer after endpoint_info: bluetooth MAC(6) + extra(2).

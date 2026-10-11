@@ -1006,38 +1006,24 @@ async fn establish_incoming(
         .context("TLS handshake (client role)")?;
     let _ = &peer_id;
 
-    // If a link already exists, this is the peer reconnecting. Adopt the new
-    // socket into it - but only when the peer's certificate is byte-identical to
-    // the one that link was established with.
+    // A link already exists for this peer.
     //
-    // This check is the whole security value of adopting rather than refusing.
-    // Without it, anything able to reach port 1716 could present any certificate
-    // and take over an established session. Upstream compares the same way in
-    // `LanLinkProvider::addLink` and aborts on mismatch.
-    if let Some(cmd_tx) = existing {
-        let presented = tls_stream.peer_cert_der();
-        let trusted = ctx.config.lock().await.trusted_certificate_der(&peer_id);
-        // The rule itself is unit-tested; see `socket_replacement_tests`.
-        let matches = crate::link::may_replace_socket(presented.as_deref(), trusted.as_deref());
-        if !matches {
-            warn!(
-                "refusing to replace the link to {peer_id}: the certificate does \
-                 not match the one this session was established with"
-            );
-            return Err(anyhow!("certificate mismatch on socket replacement"));
-        }
-        let (read_half, write_half) = tokio::io::split(tls_stream);
-        let reader = LineReader::new(read_half);
-        let writer = PacketWriter::new(write_half);
-        info!("peer {peer_id} reconnected; adopting its socket");
-        // The established link swaps the stream in and re-announces identity.
-        // If it has already gone, the send fails and the replacement dial will
-        // simply be retried.
-        if cmd_tx.send(LinkCommand::Adopt { reader, writer }).await.is_err() {
-            debug!("the link to {peer_id} ended before it could adopt the new socket");
-        }
-        // Nothing more to establish: the existing link owns the new socket.
-        return Ok(None);
+    // Refuse the new connection rather than adopting it.
+    //
+    // Adoption was implemented to match upstream's LanLinkProvider::addLink,
+    // and it does adopt - but measured on a Pixel 8 it does not converge: the
+    // phone opens a fresh connection every 5 s, each is adopted, and closing the
+    // previous socket is something the peer observes, so it reconnects again.
+    // Upstream only ever adopts a socket the peer has *already* replaced, which
+    // is a condition that has not been shown to hold here.
+    //
+    // Refusing is the prior, stable behaviour: no loop, and no leaked sockets
+    // since the refused socket is closed immediately. Re-enable adoption only
+    // once who initiates has been established from a capture.
+    if existing.is_some() {
+        return Err(anyhow!(
+            "a link to {peer_id} already exists; refusing the replacement socket"
+        ));
     }
 
     // Return the link rather than running it: the accept loop bounds the

@@ -92,8 +92,15 @@ pub fn gen_mdns_endpoint_info(device_type: u8, device_name: &str) -> String {
     // Device types: unknown=0, phone=1, tablet=2, laptop=3
     record.push(device_type << 1);
 
-    let unknown_bytes = rand::rng().random::<[u8; 16]>();
-    record.extend_from_slice(&unknown_bytes);
+    // Fixed, not random.
+    //
+    // This used to be 16 random bytes generated per call, which meant the same
+    // endpoint advertised a *different* identity on every rebuild - and a
+    // different identity from the one the BLE receiver advertises, which is a
+    // fixed constant (QS_EINFO_IDENTITY). Android reconciles the BLE and mDNS
+    // views of one endpoint by this identity, so a mismatch makes it list the
+    // same computer twice: once as "BLE", once as "network".
+    record.extend_from_slice(&crate::hdl::QS_EINFO_IDENTITY);
 
     let device_name = device_name.as_bytes();
     let length = device_name.len() as u8;
