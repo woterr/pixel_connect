@@ -47,6 +47,50 @@ Nautilus said "Sent 1 item" for a transfer that had not started: the reply means
 *queued*, not delivered. It now says "Sending", and the outcome arrives as its
 own notification.
 
+### Clipboard push never dialled — fixed, not verified
+
+`broadcast_clipboard` only considered devices already `Connected`. It sent over
+an open link and never opened one, so a copy made while the phone was idle was
+dropped permanently. Decisive evidence: the TCP connection was `ESTABLISHED`
+throughout the failing window while the device map did not report it.
+
+`wake_trusted_devices()` now dials trusted peers that have no link, using the
+provider's existing guarded `connect_to_peer()`. Not re-verified by the user
+since the fix.
+
+### Quick Share over Bluetooth — handshake complete, payload unproven
+
+Verified on a Pixel 8 (`docs/diagnosis/ble-receiver-discovery.md` has the full
+trace). Over BLE the phone completes discovery, opens the weave socket, and runs
+the entire handshake to a file offer. The offer reaches the application.
+
+Two faults were found by measurement, both introduced by the BLE work:
+
+- **Events were discarded at the point they were produced.** The receiver was
+  created with `let (msg_sender, _) = broadcast::channel(50)`. A tokio
+  broadcast channel with no receivers is not an unread queue — `send` returns
+  `Err`. Every event was dropped while the transfer completed on the wire.
+- **The accept could not reach the session.** Giving the BLE session a private
+  channel to stop sessions consuming each other's traffic rested on a false
+  premise: broadcast receivers have independent cursors and both see every
+  message. The private channel needed a relay out, and the relay was one-way, so
+  the accept had no path back. The session sat in `WaitingForUserConsent` for
+  55 seconds of keepalives until the phone disconnected. Fixed by deleting the
+  channel and sharing the application's, as the TCP inbound always has.
+
+**Not verified:** that a transfer completes after the user accepts. The last
+build with the fix has not been exercised on hardware.
+
+Quick Share over TCP/mDNS on a shared network is **verified working** — a
+132 KB PNG arrived complete in `~/Downloads` with a valid signature and `IEND`.
+
+### BLE advertisement is opt-in until proven
+
+Advertising `0xFEF3` makes the phone prefer BLE. With the payload path
+unproven that regressed the working network route for everyone, so the
+advertisement is off unless `PIXEL_CONNECT_BLE_RX=1`. The GATT service stays
+registered; it costs nothing and is what a finished implementation needs.
+
 ---
 
 ## P3 — investigated, not implementable as asked
@@ -109,10 +153,16 @@ and inspected, but neither has been confirmed on a real hotspot connection.
 - `kdeconnectd` is redundant and should be removed. It holds TCP/UDP 1716 and
   keeps a separate trust store, so the phone sees two computers and pairing
   happens against the wrong app. Nothing delegates to it.
-- The Pixel is paired with **stock KDE Connect**, not with Pixel Connect, so
-  `~/.config/dev.pixelconnect.app/kdeconnect/trusted_devices.json` is empty
-  (`{}`). Transfers work because the phone tolerates the link; there is no
-  certificate pinned on our side. Pairing with Pixel Connect fixes this.
-- `/tmp/opencode` is scratch space and has been cleared twice by server
-  restarts, taking the build sysroot with it. `scripts/setup-sysroot.sh`
-  rebuilds it and protoc must be re-fetched; both are needed before building.
+- The Pixel is paired with **stock KDE Connect**, so the phone and this
+  application use different trust stores. Pixel Connect's store is now
+  populated for the Pixel (`trusted_devices.json` has an entry for it), but any
+  pairing the phone performs in the future will land in stock KDE Connect's
+  store and not here. Certificate pinning is still untested end to end.
+- `/tmp/opencode` is scratch space and has been cleared **three** times by server
+  restarts, each time taking the build sysroot and protoc with it. Both are
+  needed before building: `scripts/setup-sysroot.sh` rebuilds the sysroot and
+  protoc 25.3 must be re-fetched. Anything needed to build belongs in the
+  repository, not in `/tmp`.
+- Frame type `12` arrives in an encrypted Quick Share frame, is not defined by
+  the protocol this build implements, and is logged as unhandled. Non-fatal in
+  observed transfers. Its meaning is unknown and has not been guessed at.
