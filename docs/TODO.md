@@ -1,42 +1,82 @@
 # Pixel Connect — outstanding work
 
-Status as of 2026-10-11. Ordered by what is blocking the user, not by when it
-was found.
+Status as of 2026-10-11, after working through the P1/P2/P3 list.
 
 ---
 
-## P1 — Blocking
+## Done since the last update
 
-### Hotspot link drops after 30–60 s and never comes back
+### Link drops after 30–60 s on a hotspot — fixed, not verified
 
-**Reported 2026-10-11, on a Pixel 8 hotspot. Not yet diagnosed to a cause.**
+There was no keepalive at all, so a hotspot's idle NAT mapping expired while
+both ends still believed the socket was open. Nothing noticed, so nothing
+reconnected. Transfers kept working because they keep the mapping warm.
 
-The device is found, pairs, and connects. File sharing works. Then after
-roughly 30–60 seconds the link drops, and does not re-establish on its own.
-Recovering requires `pkill pixel-connect` and reconnecting the phone.
+Added a keepalive (20 s timer, ping once idle 25 s, link declared dead after
+75 s of silence) and a record of how a link ended, so a dropped link can be told
+from one that never came up.
 
-Two suspects, both found by reading the code, neither confirmed:
+**Not verified on hardware** — the phone was not on the hotspot. See
+[`docs/diagnosis/hotspot-link-drop.md`](docs/diagnosis/hotspot-link-drop.md).
 
-**1. No keepalive exists.** `core/kdeconnect/src/link.rs` sets `set_nodelay`
-and then never sends anything on an idle control channel. There is no
-keepalive, ping or heartbeat anywhere in the link or the LAN provider. A NAT
-mapping on a phone hotspot is typically short-lived, so an idle TCP connection
-is dropped by the gateway after a period with no packets. Nothing in the code
-keeps the mapping warm.
+### Notifications — working, confirmed by the user
 
-This fits the reported timing well — 30–60 s is a plausible NAT idle timeout on
-Android hotspots — and it also explains why **file sharing works**: a transfer
-sends packets continuously, which refreshes the mapping. The failure appears
-only when the link is idle.
+Five events, each with its own setting. Quick Share's accept-from-notification
+path was dead code: it tested `direction == FrontToLib` while the library only
+ever sends `LibToFront`.
 
-**2. Reconnection is weak.** `svc.refresh()` runs on a 5 s tick and
-re-broadcasts identity, but nothing retries a *failed* link for a device that
-was already connected. A dropped link appears to stay dropped.
+### Image to clipboard on receive — done
 
-Next step: confirm which by watching whether a TCP FIN/RST arrives from the
-phone at the moment of the drop (client closed, so NAT or app) or whether the
-socket simply goes silent (NAT). Add a keepalive regardless — it is the fix for
-suspect 1 and is harmless if the cause is 2.
+`clipboard_images_on_receive` was a toggle wired to nothing. Added the `image`
+crate and a decoder path; `TransferProgress` now carries `saved_path` so the app
+knows where the file landed.
+
+On the echo loop that was asked about: the watcher only reads *text*, so an
+image is never pushed back to the phone on its own account. Decoding before
+writing the clipboard closes the remaining race. No text is suppressed.
+
+### One download folder for both protocols — done
+
+Quick Share and KDE Connect had separate settings, so choosing one left the
+other writing somewhere the user had not picked. `set_download_folder` applies
+to both, and the Settings page has one picker.
+
+### Honest transfer reporting — done
+
+Nautilus said "Sent 1 item" for a transfer that had not started: the reply means
+*queued*, not delivered. It now says "Sending", and the outcome arrives as its
+own notification.
+
+---
+
+## P3 — investigated, not implementable as asked
+
+### Quick Share over a NAT that will not forward a reversed connection
+
+**Not implementable against the stock phone app, and that is the finding.**
+
+KDE Connect's file transfer reverses the connection: the sender listens and the
+receiver dials back. Android's `LanLink.receivedNetworkPacket` dials the
+announced port and waits for TLS. It has no inline-payload path, so **the peer
+decides the transport, not the sender**.
+
+Relaying over the already-open control channel — which the 32 MiB framing would
+allow — would therefore only work against another build of this application,
+while breaking the `org.kde.kdeconnect_tp` it is meant to pair with. That is
+worse than the NAT problem.
+
+Full reasoning and measurements in
+[`docs/diagnosis/nat-relay-not-available.md`](docs/diagnosis/nat-relay-not-available.md).
+
+### Bluetooth and Wi-Fi Direct
+
+Not implemented; blockers documented in
+[`docs/architecture/v2-transport-findings.md`](docs/architecture/v2-transport-findings.md).
+Both require the phone to act as the discovering party.
+
+---
+
+## Still outstanding
 
 ### `docs/testing/*.md` — not started
 
@@ -46,58 +86,21 @@ Four reports required by the original brief and still unwritten:
 Every test must be classified PASS/FAIL/BLOCKED/NOT IMPLEMENTED/PARTIAL. A
 successful build is not a passing test.
 
----
-
-## P2 — Incomplete
-
-### Image → clipboard on receive
-
-`clipboard_images_on_receive` exists in settings and has a UI toggle, but the
-clipboard stack is text-only (`clipboard.rs` exposes `read_text`/`set_text`
-only). Not implemented. Deliberately left half-wired rather than faked.
-
-### Download folder — command only, no UI
-
-`set_download_folder` applies one folder to both protocols and is wired to
-`get_download_folder`, but there is no folder picker in Settings. The user
-cannot yet change it through the interface.
-
-### Honest transfer reporting
-
-Nautilus reports `sent: N` counting files **queued**, not delivered.
-`share_files` returns before any bytes move. This is why the PC once showed
-"Sent 1 item" for a transfer the phone rejected. The payload path is fixed;
-this reporting bug is not.
-
 ### Incoming-share accept is not a gate
 
 KDE Connect has no consent step for a received file — the receiver writes bytes
 on arrival, and Android does the same. `kde_accept_share` records the decision
-and clears the request; it cannot refuse the transfer. Documented in
-[`docs/diagnosis/incoming-share-consent.md`](docs/diagnosis/incoming-share-consent.md).
+and clears the request; it cannot refuse the transfer.
 
-A real gate would mean holding the payload socket unopened until the user
-accepts. That works against stock Android, at the cost of a sender timeout.
+A real gate would hold the payload socket unopened until the user accepts. That
+works against stock Android, at the cost of a sender timeout. Not implemented.
 
----
+See [`docs/diagnosis/incoming-share-consent.md`](docs/diagnosis/incoming-share-consent.md).
 
-## P3 — Investigated, deliberately not implemented
+### Verify the hotspot fixes on hardware
 
-### Bluetooth and Wi-Fi Direct
-
-Not implemented; blockers documented. Requires the phone to act as the
-discovering party on both transports.
-
-### Quick Share over the reversed-connection NAT problem
-
-File transfer reverses the connection: the receiver dials back. Through a
-gateway that only pins the mapping the phone initiated, the return path is
-unreachable. Documented in
-[`docs/diagnosis/nat-payload-failure.md`](docs/diagnosis/nat-payload-failure.md).
-
-Fixing it in-app would mean relaying the payload over the already-established
-control channel, which diverges from the protocol and would only work against
-our own build, not stock `org.kde.kdeconnect_tp`.
+Both hotspot fixes — the loopback broadcast and the keepalive — are unit-tested
+and inspected, but neither has been confirmed on a real hotspot connection.
 
 ---
 
@@ -110,5 +113,6 @@ our own build, not stock `org.kde.kdeconnect_tp`.
   `~/.config/dev.pixelconnect.app/kdeconnect/trusted_devices.json` is empty
   (`{}`). Transfers work because the phone tolerates the link; there is no
   certificate pinned on our side. Pairing with Pixel Connect fixes this.
-- `/tmp/opencode` is scratch space and was cleared by a server restart,
-  taking the build sysroot with it. `scripts/setup-sysroot.sh` rebuilds it.
+- `/tmp/opencode` is scratch space and has been cleared twice by server
+  restarts, taking the build sysroot with it. `scripts/setup-sysroot.sh`
+  rebuilds it and protoc must be re-fetched; both are needed before building.

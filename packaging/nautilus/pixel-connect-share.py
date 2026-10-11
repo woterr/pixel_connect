@@ -136,7 +136,15 @@ def send(paths, device_id=None):
     device = response.get("device")
     noun = "item" if sent == 1 else "items"
     where = f" to {device}" if device else ""
-    return True, f"Sent {sent} {noun}{where}."
+    # Say "Sending", not "Sent".
+    #
+    # The reply means the files were queued to the link, not delivered: no byte
+    # has moved yet and the phone has confirmed nothing. Reporting "Sent" here
+    # is what made a failed transfer look successful on this side while the
+    # phone reported the failure. The outcome arrives separately as a
+    # notification, so the user is told either way - but this message must not
+    # claim more than has happened.
+    return True, f"Sending {sent} {noun}{where}. You'll get a notification when it finishes."
 
 
 class PixelConnectMenuProvider(GObject.GObject, Nautilus.MenuProvider):

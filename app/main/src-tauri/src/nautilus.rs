@@ -248,7 +248,15 @@ pub async fn dispatch(app: &tauri::AppHandle, req: SendRequest) -> SendResponse 
 
     SendResponse {
         ok: true,
-        sent,
+        // Deliberately named for what it is. Each file was handed to the link
+        // and the link took it; no bytes have moved and the phone has not
+        // confirmed anything. Reporting this as "sent" is what produced
+        // "Sent 1 item" on this side while the phone said it had failed -
+        // `share_files` returns before the payload connection is even opened.
+        //
+        // The outcome arrives later as a TransferProgress event, which raises
+        // its own notification, so the user is told either way.
+        sent: sent,
         device: name,
         error: None,
     }

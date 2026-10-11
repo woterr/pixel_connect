@@ -122,7 +122,13 @@ def main(argv):
     sent = response.get("sent", 0)
     device = response.get("device")
     noun = "item" if sent == 1 else "items"
-    _notify(f"Sent {sent} {noun}{f' to {device}' if device else ''}.", "low")
+    # "Sending", not "Sent": the reply means queued, not delivered. See the same
+    # note in the Nautilus extension.
+    _notify(
+        f"Sending {sent} {noun}{f' to {device}' if device else ''}."
+        " A notification will say when it finishes.",
+        "low",
+    )
     return 0
 
 
