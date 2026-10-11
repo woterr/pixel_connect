@@ -405,6 +405,7 @@ impl LanLinkProvider {
             links: self.links.clone(),
             settings: self.settings.clone(),
             inbound_connections: Arc::new(Semaphore::new(MAX_INBOUND_CONNECTIONS)),
+            link_history: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -541,6 +542,51 @@ pub struct LinkContext {
     /// cheap denial of service against the desktop. The limit is generous
     /// because a busy network legitimately has several peers connecting.
     pub inbound_connections: Arc<Semaphore>,
+    /// Peers whose link ended, and whether it had been working.
+    ///
+    /// A link that drops should be retried; one that never came up should not
+    /// be retried in a tight loop, which is what turns a phone switching Wi-Fi
+    /// off into a reconnect storm.
+    link_history: Arc<Mutex<HashMap<String, LinkOutcome>>>,
+}
+
+/// What happened when a link to a peer ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkOutcome {
+    /// The link was established and worked for a while before ending.
+    Dropped,
+    /// The link ended almost immediately, so retrying is unlikely to help.
+    Failed,
+    /// The link was closed deliberately.
+    Shutdown,
+}
+
+impl LinkContext {
+    /// Record how a link ended, so reconnect decisions can use it.
+    pub async fn report_link_end(&self, device_id: &str, idle_for: std::time::Duration) {
+        // A link that ran for a while is worth retrying; one that died at once
+        // is not. The threshold is generous because the first thing a new link
+        // does is send its identity.
+        let outcome = if idle_for > std::time::Duration::from_secs(10) {
+            LinkOutcome::Dropped
+        } else {
+            LinkOutcome::Failed
+        };
+        self.link_history
+            .lock()
+            .await
+            .insert(device_id.to_string(), outcome);
+    }
+
+    /// How a previous link to this peer ended, if there was one.
+    pub async fn last_link_outcome(&self, device_id: &str) -> Option<LinkOutcome> {
+        self.link_history.lock().await.get(device_id).copied()
+    }
+
+    /// Forget a peer's history, so a later failure is judged on its own.
+    pub async fn clear_link_history(&self, device_id: &str) {
+        self.link_history.lock().await.remove(device_id);
+    }
 }
 
 impl LinkContext {
