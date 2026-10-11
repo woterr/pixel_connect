@@ -16,7 +16,7 @@
 // UDP broadcast and mDNS live in `discovery.rs`.
 
 use arc_swap::ArcSwap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -268,6 +268,16 @@ impl LanLinkProvider {
         self.links.lock().await.contains_key(device_id)
     }
 
+    /// True while an outbound dial to this peer is in flight.
+    async fn is_dialing(&self, device_id: &str) -> bool {
+        self.link_context().is_dialing(device_id).await
+    }
+
+    /// Reserve the single outbound dial slot; `false` if one is already in flight.
+    async fn mark_dialing(&self, device_id: &str) -> bool {
+        self.link_context().mark_dialing(device_id).await
+    }
+
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
         self.events
@@ -406,6 +416,7 @@ impl LanLinkProvider {
             settings: self.settings.clone(),
             inbound_connections: Arc::new(Semaphore::new(MAX_INBOUND_CONNECTIONS)),
             link_history: Arc::new(Mutex::new(HashMap::new())),
+            dialing: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -439,12 +450,22 @@ impl LanLinkProvider {
 
         self.publish_discovered(&info).await;
 
-        if self.is_connected(&info.id).await {
+        // Do not dial a peer that is already connected, and do not dial one we are
+        // *about* to connect: the refresh tick runs every few seconds, and a
+        // dial that takes a moment to complete would otherwise be started again
+        // on the next tick, producing exactly the duplicate-link churn this
+        // whole change exists to prevent.
+        if self.is_connected(&info.id).await || self.is_dialing(&info.id).await {
+            return;
+        }
+        if !self.mark_dialing(&info.id).await {
             return;
         }
 
         let trusted = self.config.lock().await.is_trusted(&info.id);
         let ctx = self.link_context();
+        let reservation = ctx.clone();
+        let peer_id = info.id.clone();
         tokio::spawn(async move {
             match TcpStream::connect(addr).await {
                 Ok(socket) => {
@@ -455,6 +476,9 @@ impl LanLinkProvider {
                 }
                 Err(e) => debug!("KDE Connect could not reach {addr}: {e}"),
             }
+            // Release the reservation whatever happened, so a failed dial does
+            // not permanently block future attempts.
+            reservation.clear_dialing(&peer_id).await;
             let _ = trusted;
         });
     }
@@ -548,6 +572,12 @@ pub struct LinkContext {
     /// be retried in a tight loop, which is what turns a phone switching Wi-Fi
     /// off into a reconnect storm.
     link_history: Arc<Mutex<HashMap<String, LinkOutcome>>>,
+    /// Peers with an outbound dial in progress.
+    ///
+    /// A dial takes long enough that the refresh tick can start another for the
+    /// same peer, and two simultaneous links fight over the slot. Reserving
+    /// before dialling closes that window.
+    dialing: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 /// What happened when a link to a peer ended.
@@ -586,6 +616,22 @@ impl LinkContext {
     /// Forget a peer's history, so a later failure is judged on its own.
     pub async fn clear_link_history(&self, device_id: &str) {
         self.link_history.lock().await.remove(device_id);
+    }
+
+    pub async fn is_dialing(&self, device_id: &str) -> bool {
+        self.dialing.lock().await.contains(device_id)
+    }
+
+    /// Reserve the single outbound dial slot for this peer.
+    ///
+    /// Returns `false` when a dial is already in flight, so the caller stands
+    /// down rather than starting a second connection.
+    pub async fn mark_dialing(&self, device_id: &str) -> bool {
+        self.dialing.lock().await.insert(device_id.to_string())
+    }
+
+    pub async fn clear_dialing(&self, device_id: &str) {
+        self.dialing.lock().await.remove(device_id);
     }
 }
 
@@ -797,9 +843,11 @@ async fn establish_incoming(
     let peer_name = first.get_str("deviceName").unwrap_or_default();
     let peer_version = first.body.get_i64("protocolVersion").unwrap_or(0);
 
+    // This is only a fast path. Both peers dial each other, so this check races
+    // with our own outbound dial, and the authoritative claim happens in
+    // `DeviceLink::run`. Refusing here avoids wasted work; the entry there is
+    // what actually guarantees only one link survives.
     if links.lock().await.contains_key(&peer_id) {
-        // A link already exists for this device; KDE Connect keeps only one.
-        // Refuse this one rather than replacing a working link.
         return Err(anyhow!("a link to {peer_id} already exists"));
     }
 

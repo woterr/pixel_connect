@@ -10,7 +10,7 @@
 // `plugins/share`, `plugins/battery`, `plugins/connectivity-report` and
 // `plugins/sendnotifications`.
 
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -193,10 +193,37 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
             PairState::NotPaired
         });
 
-        // Register the command channel *before* announcing the device, so the
-        // published state really does reflect a usable link.
+        // Claim the link slot, and yield if another link already holds it.
+        //
+        // Both peers dial each other - we dial on every refresh tick, the phone
+        // dials when it sees our identity - so two connections can be built for
+        // the same device at the same moment. Claiming the slot here, rather
+        // than inserting unconditionally, means the loser stands down instead
+        // of overwriting the winner.
+        //
+        // This was the cause of two separate symptoms. `HashMap::insert`
+        // replaced the existing sender, which dropped the older link's channel,
+        // so its `cmd_rx.recv()` returned `None` and it broke out of its loop
+        // and tore the link down - mid-transfer. The phone then saw the drop,
+        // reconnected, and both sides repeated it forever: a fresh "connected"
+        // every 30 seconds, which is the phone re-establishing a link we kept
+        // knocking down.
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<LinkCommand>(32);
-        self.links.lock().await.insert(self.peer.id.clone(), cmd_tx);
+        {
+            let mut links = self.links.lock().await;
+            match links.entry(self.peer.id.clone()) {
+                Entry::Occupied(_) => {
+                    info!(
+                        "{}: a link is already established; standing this one down",
+                        self.peer.name
+                    );
+                    return Ok(());
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(cmd_tx);
+                }
+            }
+        }
 
         self.publish().await;
 
@@ -1362,6 +1389,101 @@ mod inbound_lifetime_tests {
             "a stale link must be given longer than the handshake budget, or \
              the handshake timeout becomes the de facto link lifetime"
         );
+    }
+}
+
+/// The bug that made transfers stop halfway and produced a "connected"
+/// notification every 30 seconds.
+///
+/// Both peers dial each other: we dial on every refresh tick, the phone dials
+/// when it sees our identity broadcast. Two links for the same device could
+/// therefore be built simultaneously, and `HashMap::insert` replaced the
+/// existing sender rather than yielding. Dropping the older link's sender closed
+/// its command channel, so its `cmd_rx.recv()` returned `None` and it broke out
+/// of its loop - mid-transfer. The phone saw the drop and reconnected, and the
+/// cycle repeated.
+///
+/// This reproduces the mechanism directly: a sender replaced by a second
+/// `insert` leaves the first receiver with `None`, which is exactly what the
+/// loop treats as "shut down".
+mod duplicate_link_tests {
+    use super::*;
+    use std::collections::hash_map::Entry;
+    use tokio::sync::mpsc;
+
+    async fn claim(
+        links: &Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>>,
+        id: &str,
+    ) -> bool {
+        let (tx, _rx) = mpsc::channel::<LinkCommand>(1);
+        let mut guard = links.lock().await;
+        match guard.entry(id.to_string()) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(slot) => {
+                slot.insert(tx);
+                true
+            }
+        }
+    }
+
+    /// The old behaviour: a second link silently displaced the first, and the
+    /// first link's receiver reported a closed channel.
+    #[tokio::test]
+    async fn a_second_insert_displaces_the_first_receiver() {
+        let links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let (first_tx, mut first_rx) = mpsc::channel::<LinkCommand>(1);
+
+        links.lock().await.insert("peer".into(), first_tx);
+        // The unconditional insert the old code performed.
+        let (second_tx, _second_rx) = mpsc::channel::<LinkCommand>(1);
+        links.lock().await.insert("peer".into(), second_tx);
+
+        // Dropping the replaced sender is what tore the live link down.
+        assert!(
+            first_rx.recv().await.is_none(),
+            "the displaced link must see a closed channel - this is the bug"
+        );
+    }
+
+    /// The new behaviour: the second link stands down and the first survives.
+    #[tokio::test]
+    async fn the_second_link_stands_down_and_the_first_survives() {
+        let links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let (first_tx, mut first_rx) = mpsc::channel::<LinkCommand>(1);
+
+        links.lock().await.insert("peer".into(), first_tx);
+
+        assert!(!claim(&links, "peer").await, "a second link must stand down");
+
+        // Prove the *original* sender is still the registered one. Sending on a
+        // displaced sender would silently go nowhere, which is exactly how the
+        // live link was being torn down mid-transfer.
+        let live = links
+            .lock()
+            .await
+            .get("peer")
+            .cloned()
+            .expect("the slot must still be held");
+        live.send(LinkCommand::RequestPairing)
+            .await
+            .expect("the registered link must still be usable");
+        assert!(
+            matches!(first_rx.recv().await, Some(LinkCommand::RequestPairing)),
+            "the original link must still be the registered one"
+        );
+    }
+
+    /// Different devices are unaffected - the guard is per device.
+    #[tokio::test]
+    async fn a_different_peer_is_still_accepted() {
+        let links: Arc<Mutex<HashMap<String, mpsc::Sender<LinkCommand>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        assert!(claim(&links, "phone-a").await);
+        assert!(claim(&links, "phone-b").await);
+        assert!(!claim(&links, "phone-a").await);
+        assert_eq!(links.lock().await.len(), 2);
     }
 }
 
