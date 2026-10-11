@@ -53,61 +53,62 @@ analyse() {
     # are never the basis for a conclusion.
     strip() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 
-    local opened intro payload done_ handshake
-    opened=$(grep -c "weave: notify session open" "$APP_LOG")
-    intro=$(grep -c "INTRODUCTION" "$APP_LOG")
-    payload=$(grep -c "PayloadType::Bytes" "$APP_LOG")
-    done_=$(grep -c "End of data" "$APP_LOG")
-    handshake=$(grep -c "Pin code" "$APP_LOG")
+    echo
+    echo "  Which route the phone used:"
+    printf '    %-38s %s\n' "TCP/mDNS (LAN)" "$(grep -c 'TcpServer: new client' "$APP_LOG")"
+    printf '    %-38s %s\n' "BLE weave (notify socket)" "$(grep -c 'weave: notify session open' "$APP_LOG")"
 
     echo
-    echo "  Weave handshake (from the application log):"
-    printf '    %-38s %s\n' "subscribed to notify (0102)" "$opened"
-    printf '    %-38s %s\n' "INTRODUCTION received" "$intro"
-    printf '    %-38s %s\n' "pairing PIN issued" "$handshake"
-    printf '    %-38s %s\n' "payload bytes received" "$payload"
-    printf '    %-38s %s\n' "end of transfer reached" "$done_"
+    echo "  Handshake (either transport):"
+    printf '    %-38s %s\n' "connection started" \
+        "$(( $(grep -c 'Handling State::Initial frame' "$APP_LOG") + $(grep -c 'weave: INTRODUCTION' "$APP_LOG") ))"
+    printf '    %-38s %s\n' "peer identified" "$(grep -c 'RemoteDeviceInfo' "$APP_LOG")"
+    printf '    %-38s %s\n' "pairing PIN issued" "$(grep -c 'Pin code' "$APP_LOG")"
+    printf '    %-38s %s\n' "payload bytes received" "$(grep -c 'PayloadType::Bytes' "$APP_LOG")"
+    printf '    %-38s %s\n' "files offered" "$(grep -c 'PayloadType::File' "$APP_LOG")"
+    printf '    %-38s %s\n' "end of transfer reached" "$(grep -c 'End of data' "$APP_LOG")"
 
     echo
-    echo "  D-Bus GATT operations (for completeness; not authoritative):"
-    printf '    %-38s %s\n' "Device1.Connect" "$(grep -c 'member=Connect' "$HCI_LOG" 2>/dev/null || echo 0)"
-    printf '    %-38s %s\n' "GattCharacteristic1.ReadValue" "$(grep -c 'member=ReadValue' "$HCI_LOG" 2>/dev/null || echo 0)"
-    printf '    %-38s %s\n' "GattCharacteristic1.WriteValue" "$(grep -c 'member=WriteValue' "$HCI_LOG" 2>/dev/null || echo 0)"
-    printf '    %-38s %s\n' "GattCharacteristic1.StartNotify" "$(grep -c 'member=StartNotify' "$HCI_LOG" 2>/dev/null || echo 0)"
-
-    echo
-    echo "  Application-side events that reached the UI:"
-    if grep -qiE "emit|notification|state changed|inbound request|transfer" "$APP_LOG"; then
-        strip < "$APP_LOG" | grep -iE "emit|notification|state changed|inbound request|transfer" \
-            | grep -viE "arboard|Gtk-CRIT|appindicator|libayatana" \
-            | tail -12 | cut -c1-150 | sed 's/^/    /'
+    echo "  What was delivered:"
+    if grep -q 'Created file' "$APP_LOG"; then
+        strip < "$APP_LOG" | grep -oE 'path: "[^"]+"' | sed 's/^/    /'
+        echo "    (the path above is a staging path; check your Downloads folder)"
+        echo "    newest in Downloads:"
+        ls -lt "$HOME/Downloads" 2>/dev/null | head -4 | sed 's/^/      /'
     else
-        echo "    none - the wire is alive but the application was told nothing"
+        echo "    nothing was written"
     fi
+
+    echo
+    echo "  Anything the application could not handle:"
+    strip < "$APP_LOG" | grep -iE 'unhandled|not implemented|unsupported' \
+        | sed 's/OfflineFrame {.*/OfflineFrame { ... }/' | cut -c1-120 | sort -u | head -5 | sed 's/^/    /' \
+        || echo "    nothing"
+
+    echo
+    echo "  D-Bus GATT operations (background only; not authoritative):"
+    printf '    %-38s %s\n' "GattCharacteristic1.ReadValue" "$(grep -c 'member=ReadValue' "$HCI_LOG" 2>/dev/null)"
+    printf '    %-38s %s\n' "GattCharacteristic1.WriteValue" "$(grep -c 'member=WriteValue' "$HCI_LOG" 2>/dev/null)"
+    printf '    %-38s %s\n' "GattCharacteristic1.StartNotify" "$(grep -c 'member=StartNotify' "$HCI_LOG" 2>/dev/null)"
 
     echo
     banner "Reading this"
     cat <<'EOS'
-  The counters above are the handshake in order. Where it stops is the bug:
+  The phone picks a route on its own. A phone on the same network will use
+  TCP/mDNS and never touch BLE, so a run showing no BLE activity is only
+  meaningful if it also shows no TCP client - check the first two counters
+  before concluding anything.
 
-  * subscribed 0
-        The phone never subscribed to the weave notify characteristic. Our
-        advertisement is being seen but not connected to.
+  If "end of transfer reached" is greater than zero and something was
+  delivered, the transfer worked and the problem is in the user interface, not
+  the protocol. An earlier version of this script reported all-zero counters
+  during a transfer that had in fact completed successfully over TCP, because
+  it only counted the BLE weave strings.
 
-  * subscribed > 0, INTRODUCTION 0
-        The socket opened but the introduction never came. Weave framing.
-
-  * through PIN, payload 0
-        Pairing completed but no payload arrived. The offer is not reaching us.
-
-  * payload > 0, end of data 0
-        Payload started but never finished. Chunking or framing.
-
-  * end of data > 0, no application events
-        The transfer completed on the wire and the application was not told.
-        This is the failure mode where events were being discarded at the
-        point they were produced, and it is the reason this script reports the
-        application log rather than the D-Bus capture.
+  Where the handshake stops before "end of transfer reached" is the real fault.
+  "Anything the application could not handle" lists frame types that arrived
+  and were dropped; a frame type the protocol does not define may be a newer
+  message than this build understands.
 
   Captures kept for reference:
     D-Bus traffic : $HCI_LOG
@@ -124,6 +125,28 @@ cleanup() {
 }
 
 # ------------------------------------------------------------------- setup --
+# This script no longer needs root - it used btmon, which did, and was run with
+# sudo for that reason. Running it as root starts Pixel Connect as root, which
+# silently changes where received files land: the app used root's home, so a
+# transfer that completed successfully wrote to /root instead of ~/Downloads.
+# A transfer that appeared to fail was in fact delivered to the wrong place.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "This script must not be run as root."
+    echo
+    if [ -n "${SUDO_USER:-}" ]; then
+        echo "Run it as $SUDO_USER instead:"
+        echo
+        echo "    sudo -u $SUDO_USER $0 \$@"
+        echo
+        echo "Running as root starts Pixel Connect as root, so received files are"
+        echo "written to /root rather than to $SUDO_USER's Downloads folder - which"
+        echo "looks exactly like a failed transfer."
+    else
+        echo "    ./scripts/ble-debug.sh"
+    fi
+    exit 1
+fi
+
 banner "Bluetooth adapter"
 if ! bluetoothctl show >/dev/null 2>&1; then
     echo "bluetoothctl cannot reach BlueZ. Is bluetooth.service running?"
@@ -131,8 +154,11 @@ if ! bluetoothctl show >/dev/null 2>&1; then
     exit 1
 fi
 
-powered=$(bluetoothctl show 2>/dev/null | sed -n 's/.*Powered: \([A-Za-z]*\)/\1/p')
-if [ "$powered" != "Yes" ]; then
+# bluetoothctl reports "Powered: yes" in some versions and "Yes" in others,
+# so compare case-insensitively or the script switches the adapter on when it
+# is already on and makes its own output look unreliable.
+powered=$(bluetoothctl show 2>/dev/null | sed -n 's/^[[:space:]]*Powered: *\([A-Za-z]*\).*/\1/p')
+if [ "$(printf '%s' "$powered" | tr '[:upper:]' '[:lower:]')" != "yes" ]; then
     echo "  adapter is powered off; turning it on"
     bluetoothctl power on >/dev/null 2>&1
     sleep 2
