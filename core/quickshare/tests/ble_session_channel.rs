@@ -1,29 +1,27 @@
-//! Regression tests for how a BLE session reaches the application.
+//! Properties the shared application channel now depends on.
 //!
-//! The BLE receiver gives each weave session a private message channel, on the
-//! correct reasoning that two `InboundRequest` sessions sharing one channel
-//! consume each other's traffic - each `recv()` takes the first message
-//! available. The private channel is wired to the application's channel by a
-//! relay task that holds its `Receiver`.
+//! The BLE receiver and the TCP inbound are handed the same
+//! `broadcast::Sender<ChannelMessage>`. Two facts have to hold for that to
+//! work, and both were previously assumed rather than checked - the wrong
+//! assumption about the second one cost a day of debugging, so it is checked
+//! here. See also `broadcast_cursor.rs`, which covers cursor independence in
+//! detail.
 //!
-//! An earlier version bound the receiver to `_` instead, and that silently
-//! killed the whole path. A tokio broadcast channel with no receivers is not an
-//! unread queue: `send` on it returns `Err` and the message is discarded at
-//! the point it is produced. Nothing failed loudly, the weave handshake
-//! completed on the wire, the payload was transferred, and the application was
-//! never told - so the UI sat on "connecting" indefinitely while the phone
-//! faithfully sent bytes into a void.
+//! 1. The channel must have a live Receiver. A tokio broadcast channel with no
+//!    receivers is not an unread queue: `send` returns `Err` and the message is
+//!    discarded at the point it is produced. That exact mistake was made here
+//!    once, by binding a Receiver to `_`, and it silently swallowed every event
+//!    of a transfer that had completed on the wire.
 //!
-//! These tests pin the part that is easy to break again by accident: the
-//! receiver must outlive the producer, and the relay must actually forward.
-//! Captured from a real Pixel 8, which is how the void was found.
+//! 2. The application must hold its Receiver for the life of the process. The
+//!    inbound sessions subscribe; the application listens. If the application
+//!    dropped its Receiver, sends would start failing with no error surfacing
+//!    anywhere near the transfer.
 
 use pixel_connect_quickshare::channel::ChannelMessage;
 use tokio::sync::broadcast;
 use tokio::time::{timeout, Duration};
 
-/// A message carrying a recognisable id, so a test does not depend on the
-/// fields of a type that is expected to grow.
 fn message(id: &str) -> ChannelMessage {
     ChannelMessage {
         id: id.to_string(),
@@ -32,108 +30,104 @@ fn message(id: &str) -> ChannelMessage {
 }
 
 #[tokio::test]
-async fn a_receiver_must_be_kept_alive_or_messages_are_lost() {
-    // This is the shape of the bug: a sender with no receiver at all.
+async fn a_channel_with_no_receiver_discards_messages() {
     let (tx, rx) = broadcast::channel::<ChannelMessage>(50);
     drop(rx);
 
-    let result = tx.send(message("discarded"));
-
     assert!(
-        result.is_err(),
-        "sending on a broadcast channel with no receivers must fail. This is \
-         exactly why dropping the Receiver silently discarded every BLE event: \
-         the weave handshake completed on the wire and the application never \
-         heard about it."
+        tx.send(message("lost")).is_err(),
+        "sending with no Receiver must fail. This is why dropping the \
+         Receiver made a completed transfer invisible to the application."
     );
 }
 
-/// The production wiring: a private session channel whose Receiver is held by
-/// a relay task, forwarding onto the channel the application listens to.
+/// The production wiring, in the direction that actually failed: the
+/// application sends a command, and a session subscribed to the same channel
+/// receives it.
 #[tokio::test]
-async fn a_private_session_channel_is_relayed_to_the_application() {
-    let (app_tx, mut app_rx) = broadcast::channel::<ChannelMessage>(50);
+async fn an_application_command_reaches_a_session() {
+    // One channel, shared - as the TCP inbound and the BLE receiver now share it.
+    let (tx, mut session) = broadcast::channel::<ChannelMessage>(50);
 
-    // The session's own channel, separate so two sessions cannot steal each
-    // other's traffic.
-    let (session_tx, mut session_rx) = broadcast::channel::<ChannelMessage>(50);
+    // The application sends the accept.
+    tx.send(message("accept-transfer-1"))
+        .expect("the session's Receiver keeps the channel live");
 
-    // The relay. This task holding `session_rx` is the entire reason the
-    // channel works.
-    tokio::spawn(async move {
-        loop {
-            match session_rx.recv().await {
-                Ok(msg) => {
-                    let _ = app_tx.send(msg);
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-
-    // The session produces an event. This must succeed: the relay holds the
-    // receiver, so the channel is live.
-    session_tx
-        .send(message("ble-session"))
-        .expect("the relay must hold the receiver, so this send must succeed");
-
-    // The application must see it.
-    let received = timeout(Duration::from_secs(5), app_rx.recv())
+    let got = timeout(Duration::from_secs(5), session.recv())
         .await
-        .expect("the relay did not forward within 5s")
-        .expect("relay produced no message");
+        .expect("the session never received the application's command")
+        .expect("session got nothing");
 
     assert_eq!(
-        received.id, "ble-session",
-        "the application received a different message than the session sent"
+        got.id, "accept-transfer-1",
+        "the session must receive what the application sends"
     );
 }
 
-/// Two sessions with separate channels must both reach the application, and
-/// neither may lose its events to the other - the original reason the channels
-/// were made private in the first place.
+/// And the other direction, which is what the one-way relay broke.
 #[tokio::test]
-async fn two_sessions_do_not_consume_each_others_events() {
-    let (app_tx, mut app_rx) = broadcast::channel::<ChannelMessage>(50);
+async fn a_session_event_reaches_the_application() {
+    let (tx, mut application) = broadcast::channel::<ChannelMessage>(50);
+    let mut session = tx.subscribe();
 
-    let mut senders = Vec::new();
-    for name in ["session-a", "session-b"] {
-        let (session_tx, mut session_rx) = broadcast::channel::<ChannelMessage>(50);
-        let relay = app_tx.clone();
-        tokio::spawn(async move {
-            loop {
-                match session_rx.recv().await {
-                    Ok(msg) => {
-                        let _ = relay.send(msg);
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-        senders.push(session_tx);
-        let _ = name;
-    }
+    tx.send(message("quickshare-offer"))
+        .expect("application Receiver keeps the channel live");
 
-    // Both sessions produce simultaneously.
-    senders[0].send(message("from-a")).expect("session a send");
-    senders[1].send(message("from-b")).expect("session b send");
+    let got = timeout(Duration::from_secs(5), application.recv())
+        .await
+        .expect("the application never received the session's event")
+        .expect("application got nothing");
 
-    // The application must receive both, not one message twice.
+    assert_eq!(got.id, "quickshare-offer");
+
+    // The session must see its own send too, since it shares the channel.
+    let seen_by_session = timeout(Duration::from_secs(5), session.recv())
+        .await
+        .expect("session timed out")
+        .expect("session got nothing");
+    assert_eq!(seen_by_session.id, "quickshare-offer");
+}
+
+/// Both directions at once, which is the state a transfer is actually in when
+/// the user presses Accept.
+#[tokio::test]
+async fn offer_then_accept_crosses_in_both_directions() {
+    let (tx, mut application) = broadcast::channel::<ChannelMessage>(50);
+    let mut session = tx.subscribe();
+
+    // The session offers a file.
+    tx.send(message("offer:ble-weave")).expect("offer send");
+
+    // The application receives it and the user accepts.
+    let offer = timeout(Duration::from_secs(5), application.recv())
+        .await
+        .expect("application never got the offer")
+        .expect("application got nothing");
+    assert_eq!(offer.id, "offer:ble-weave");
+
+    tx.send(message("accept:ble-weave")).expect("accept send");
+
+    // The session sees every message on the channel, including the offer it
+    // sent itself. It therefore has to pick out what concerns it rather than
+    // assume the next message is the answer - which is how the TCP inbound
+    // already works, and is why this shared wiring is not new behaviour.
+    //
+    // What matters is that the accept is in there at all. This is the step
+    // that failed when the session had a private channel with a one-way relay:
+    // the transfer hung in WaitingForUserConsent until the peer disconnected.
     let mut seen = Vec::new();
-    for _ in 0..2 {
-        let msg = timeout(Duration::from_secs(5), app_rx.recv())
+    while !seen.iter().any(|id| id == "accept:ble-weave") {
+        let msg = timeout(Duration::from_secs(5), session.recv())
             .await
-            .expect("did not receive both events within 5s")
-            .expect("relay produced no message");
+            .expect("the session never received the accept - the transfer would \
+                     hang in WaitingForUserConsent until the peer disconnected")
+            .expect("session got nothing");
         seen.push(msg.id);
     }
 
     assert_eq!(
         seen,
-        vec!["from-a".to_string(), "from-b".to_string()],
-        "the application must see both sessions' events. Losing one to the \
-         other is what made 'Accept' in the notification do nothing."
+        vec!["offer:ble-weave".to_string(), "accept:ble-weave".to_string()],
+        "the session should see its own offer followed by the accept"
     );
 }

@@ -162,54 +162,27 @@ impl QuickShareService {
         let rx_endpoint_id: [u8; 4] = endpoint_id[..4].try_into()?;
         {
             let ctk_ble = ctoken.clone();
-            // A dedicated channel, NOT self.message_sender.
+            // The application's own channel, shared with the TCP inbound.
             //
-            // Every InboundRequest subscribes to the channel it was given and
-            // each `recv()` takes the *first* message, so two sessions sharing
-            // one channel steal each other's traffic. With BLE and TCP inbound
-            // both live, an AcceptTransfer sent for one could be consumed by the
-            // other - which is what made "Accept" in the notification appear to
-            // do nothing.
+            // An earlier version gave this a private channel, on the reasoning
+            // that two sessions sharing one channel consume each other's
+            // traffic. That reasoning is false: every broadcast Receiver keeps
+            // its own cursor, so both sessions see every message and neither
+            // can starve the other. tests/broadcast_cursor.rs pins it.
             //
-            // The Receiver is kept alive by the relay below and must be. A
-            // tokio broadcast channel with no receivers is not a queue that
-            // nobody is reading yet - `send` on it returns Err, and every
-            // message is discarded at the point it is produced. The first
-            // version of this bound the Receiver to `_`, which made the whole
-            // channel dead on arrival: the handshake below completed on the
-            // wire and the payload was transferred, and the application was
-            // told nothing, because every event had been thrown away. That is
-            // what left the UI on "connecting" indefinitely.
-            let (msg_sender, mut msg_rx) = broadcast::channel(50);
-
-            // Relay this session's events to the application.
+            // The private channel needed a relay to get events out to the
+            // application, and the relay was one-way. Measured on a Pixel 8,
+            // the offer reached the application and the accept never came back
+            // the other way, so the session sat in WaitingForUserConsent for a
+            // minute of keepalives until the phone gave up:
             //
-            // Two InboundRequest sessions cannot share one channel, because
-            // each `recv()` takes the first message available and they would
-            // consume each other's traffic - which is why they have separate
-            // channels - but the application still needs to see both. So each
-            // session's channel is private and is drained here onto the one
-            // the application listens to.
-            let relay_sender = self.message_sender.clone();
-            tracker.spawn(async move {
-                loop {
-                    match msg_rx.recv().await {
-                        Ok(msg) => {
-                            let _ = relay_sender.send(msg);
-                        }
-                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            // This relay is slower than a session produces.
-                            // Dropping is the same choice tokio makes and is
-                            // recorded rather than silently tolerated.
-                            debug!(
-                                "BLE session outran the relay by {skipped} message(s); \
-                                 the application will miss them"
-                            );
-                        }
-                        Err(broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-            });
+            //     quickshare offer: Shreyas's Pixel 8 wants to share 1 file
+            //     Unhandled connection state ... WaitingForUserConsent
+            //     weave: DISCONNECTION
+            //
+            // Sharing the application's channel is what the TCP inbound has
+            // always done, so this is the same wiring, not new machinery.
+            let msg_sender = self.message_sender.clone();
             let hostname = sys_metrics::host::get_hostname().unwrap_or_else(|_| "Pixel Connect".into());
             let endpoint_for_ble = rx_endpoint_id;
             let hostname_gatt = hostname.clone();
