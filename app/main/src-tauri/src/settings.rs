@@ -13,6 +13,20 @@ use tauri_plugin_store::{Store, StoreExt};
 
 pub const SETTINGS_FILE: &str = ".pixel-connect-settings.json";
 
+/// The themes the interface knows how to apply.
+///
+/// Kept in step with the selectors in `app/main/src/assets/main.css`. A stored
+/// value outside this list falls back to the default rather than being applied,
+/// so a theme removed from the stylesheet cannot leave the interface with no
+/// tokens defined.
+pub const THEMES: &[&str] = &[
+    "dark",
+    "light",
+    "midnight",
+    "contrast-dark",
+    "contrast-light",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -22,6 +36,13 @@ pub struct Settings {
     pub startminimized: bool,
     /// Launch Pixel Connect at login.
     pub autostart: bool,
+
+    /// Which colour theme the interface uses.
+    ///
+    /// One of `dark`, `light`, `midnight`, `contrast-dark`, `contrast-light`.
+    /// Anything else falls back to `dark` when applied, so an unknown or
+    /// corrupt value cannot leave the interface unreadable.
+    pub theme: String,
     /// Google Quick Share advertising visibility (0 visible, 1 invisible, 2 temporary).
     pub visibility: u8,
     /// Optional fixed TCP port for the Quick Share service.
@@ -77,6 +98,7 @@ impl Default for Settings {
             // login is what makes it discoverable at all without the user
             // having to launch it first.
             autostart: true,
+            theme: "dark".to_string(),
             visibility: 0,
             port: None,
             download_folder: None,
@@ -126,6 +148,20 @@ pub fn load(app: &AppHandle) -> Settings {
             .get("autostart")
             .and_then(|v| v.as_bool())
             .unwrap_or(d.autostart),
+        // Borrowed rather than returned by reference: the store borrow does
+        // not outlive this function, so a `&str` from it cannot be returned.
+        //
+        // An unrecognised value would leave the interface on whatever `:root`
+        // happens to define, which is not necessarily what was asked for, so
+        // fall back to the default explicitly.
+        // `as_str` borrows from the owned `Value` the store hands back, so the
+        // string is copied out immediately - unlike `as_bool` and `as_u64`
+        // above, which return owned values and can be used directly.
+        theme: s
+            .get("theme")
+            .and_then(|v| v.as_str().map(str::to_string))
+            .filter(|t| THEMES.contains(&t.as_str()))
+            .unwrap_or(d.theme),
         visibility: s
             .get("visibility")
             .and_then(|v| v.as_u64())

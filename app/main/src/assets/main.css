@@ -32,7 +32,25 @@
 		--pc-radius-pill: 2rem;
 	}
 
-	html.light {
+	/*
+	 * Themes.
+	 *
+	 * Selected by `data-theme` on <html>. `:root` above is the dark default, so
+	 * an application that never applies the attribute still renders correctly
+	 * rather than in an undefined state.
+	 *
+	 * `html.light` is kept because it predates `data-theme`. It is the same
+	 * theme as `data-theme="light"`.
+	 *
+	 * The two contrast themes are accessibility options, not decoration. Their
+	 * body text clears WCAG AAA (7:1) against their background, where the
+	 * default themes are close to AA (about 15:1 dark, 17:1 light). They are
+	 * provided because a low-vision user has no other way to increase contrast
+	 * here, and the OS setting cannot reach a webview.
+	 */
+
+	html.light,
+	html[data-theme='light'] {
 		color-scheme: light;
 		--pc-bg: 246 246 246;
 		--pc-raised: 255 255 255;
@@ -47,6 +65,57 @@
 		--pc-online: 22 145 88;
 		--pc-warn: 176 108 0;
 		--pc-danger: 199 42 34;
+	}
+
+	html[data-theme='midnight'] {
+		color-scheme: dark;
+		--pc-bg: 4 6 14;
+		--pc-raised: 10 14 26;
+		--pc-card: 14 19 34;
+		--pc-card-alt: 20 27 46;
+		--pc-line: 32 42 68;
+		--pc-text: 236 240 250;
+		--pc-muted: 156 166 190;
+		--pc-faint: 108 118 142;
+		--pc-accent: 140 170 255;
+		--pc-on-accent: 4 6 14;
+		--pc-online: 88 214 168;
+		--pc-warn: 245 185 96;
+		--pc-danger: 255 122 114;
+	}
+
+	html[data-theme='contrast-dark'] {
+		color-scheme: dark;
+		--pc-bg: 0 0 0;
+		--pc-raised: 10 10 10;
+		--pc-card: 20 20 20;
+		--pc-card-alt: 32 32 32;
+		--pc-line: 110 110 110;
+		--pc-text: 255 255 255;
+		--pc-muted: 214 214 214;
+		--pc-faint: 176 176 176;
+		--pc-accent: 255 255 255;
+		--pc-on-accent: 0 0 0;
+		--pc-online: 122 255 178;
+		--pc-warn: 255 214 102;
+		--pc-danger: 255 138 128;
+	}
+
+	html[data-theme='contrast-light'] {
+		color-scheme: light;
+		--pc-bg: 255 255 255;
+		--pc-raised: 255 255 255;
+		--pc-card: 255 255 255;
+		--pc-card-alt: 242 242 242;
+		--pc-line: 40 40 40;
+		--pc-text: 0 0 0;
+		--pc-muted: 32 32 32;
+		--pc-faint: 58 58 58;
+		--pc-accent: 0 0 0;
+		--pc-on-accent: 255 255 255;
+		--pc-online: 0 92 44;
+		--pc-warn: 116 62 0;
+		--pc-danger: 148 0 0;
 	}
 
 	html,

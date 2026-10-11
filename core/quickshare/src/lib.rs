@@ -210,23 +210,30 @@ impl QuickShareService {
                     ),
                 }
             });
-            // Advertising 0xFEF3 makes the phone prefer BLE, and Quick Share
-            // then sticks at "connecting" because the weave payload path is not
-            // finished. That regressed the working mDNS/LAN transfer for
-            // everyone, so the advertisement is opt-in until the data path
-            // works.
+            // Advertise 0xFEF3 by default.
             //
-            // The GATT service above stays registered either way: it costs
-            // nothing and is what a completed implementation needs.
+            // This was opt-in because advertising it made the phone prefer BLE
+            // while the payload path was unfinished, and Quick Share then stuck
+            // at "connecting" - which regressed the working mDNS/LAN transfer
+            // for everyone. That regression is fixed: both routes now complete
+            // a transfer end to end, verified on a Pixel 8 with no shared
+            // network. See docs/testing/ble-quick-share-verification.md.
             //
-            // PIXEL_CONNECT_BLE_RX=1 re-enables it for testing.
+            // The two routes are one device to the phone, not two. Both carry
+            // the same endpoint id and the same endpoint_info identity, so the
+            // phone reconciles them into a single target rather than listing
+            // the computer twice.
+            //
+            // PIXEL_CONNECT_BLE_RX=0 switches the advertisement off, which is
+            // useful when diagnosing that the two routes have diverged.
             let ble_rx = std::env::var("PIXEL_CONNECT_BLE_RX")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+                .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+                .unwrap_or(true);
             if !ble_rx {
                 info!(
-                    "Quick Share BLE receiver advertisement is off (PIXEL_CONNECT_BLE_RX \
-                     is not set); the phone will discover this machine over mDNS/LAN"
+                    "Quick Share BLE receiver advertisement is off \
+                     (PIXEL_CONNECT_BLE_RX=0); the phone will discover this \
+                     machine over mDNS/LAN only"
                 );
             } else {
             let ctk_adv = ctoken.clone();

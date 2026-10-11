@@ -66,6 +66,11 @@ export interface Settings {
 	realclose: boolean
 	startminimized: boolean
 	autostart: boolean
+	/**
+	 * One of `dark`, `light`, `midnight`, `contrast-dark`, `contrast-light`.
+	 * Applied by writing `data-theme` on the document element.
+	 */
+	theme: string
 	visibility: number
 	port: number | null
 	downloadPath: string | null

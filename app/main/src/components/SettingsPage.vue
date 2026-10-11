@@ -50,6 +50,45 @@ async function load() {
 	sshAvailable.value = available.available
 }
 
+/**
+ * The themes offered, with each one's own tokens.
+ *
+ * The swatches are built from the same values as main.css rather than being
+ * drawn separately, so a swatch cannot drift from the theme it previews.
+ */
+const THEMES = [
+	{
+		id: 'dark',
+		label: 'Dark',
+		note: 'The default',
+		swatch: { bg: '10 10 10', line: '42 42 42', text: '244 244 244', muted: '142 142 142', accent: '244 244 244' }
+	},
+	{
+		id: 'light',
+		label: 'Light',
+		note: 'For bright rooms',
+		swatch: { bg: '246 246 246', line: '224 224 224', text: '16 16 16', muted: '96 96 96', accent: '16 16 16' }
+	},
+	{
+		id: 'midnight',
+		label: 'Midnight',
+		note: 'Cool blue',
+		swatch: { bg: '4 6 14', line: '32 42 68', text: '236 240 250', muted: '156 166 190', accent: '140 170 255' }
+	},
+	{
+		id: 'contrast-dark',
+		label: 'High contrast',
+		note: 'Dark, maximum contrast',
+		swatch: { bg: '0 0 0', line: '110 110 110', text: '255 255 255', muted: '214 214 214', accent: '255 255 255' }
+	},
+	{
+		id: 'contrast-light',
+		label: 'High contrast light',
+		note: 'Light, maximum contrast',
+		swatch: { bg: '255 255 255', line: '40 40 40', text: '0 0 0', muted: '32 32 32', accent: '0 0 0' }
+	}
+] as const
+
 type MutableSetting =
 	| 'realclose'
 	| 'startminimized'
@@ -66,6 +105,7 @@ type MutableSetting =
 	| 'notifyTransferFailed'
 	| 'notifyProgress'
 	| 'kdeDeviceName'
+	| 'theme'
 
 async function save(key: MutableSetting, value: boolean | string | number | null) {
 	if (!settings.value) return
@@ -74,6 +114,9 @@ async function save(key: MutableSetting, value: boolean | string | number | null
 	try {
 		settings.value = await api.updateSettings(next)
 		store.settings = settings.value
+		// A theme is visible the moment it changes. Waiting for a restart to
+		// see it would make the control look broken.
+		if (key === 'theme') store.applyTheme(String(value))
 	} catch (e) {
 		store.toast(`Could not save the setting: ${e}`, 'error')
 	} finally {
@@ -451,6 +494,77 @@ onMounted(load)
 						label="Close instead of minimise"
 						@update:model-value="save('realclose', $event)"
 					/>
+				</div>
+
+				<!--
+					Theme.
+
+					Each swatch is the theme's own tokens rather than a drawn
+					approximation, so what you see here is literally what the
+					interface becomes.
+				-->
+				<div class="pc-card px-6 py-5 lg:col-span-2">
+					<div class="flex items-center gap-4">
+						<PcIcon name="moon" :size="20" class="text-muted" />
+						<div class="min-w-0 flex-1">
+							<p class="font-semibold">Appearance</p>
+							<p class="text-sm text-muted">
+								The two contrast themes are for readability, not decoration: their body
+								text clears WCAG AAA against the background.
+							</p>
+						</div>
+					</div>
+
+					<div
+						class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+						role="radiogroup"
+						aria-label="Colour theme"
+					>
+						<button
+							v-for="option in THEMES"
+							:key="option.id"
+							type="button"
+							role="radio"
+							:aria-checked="settings.theme === option.id"
+							class="pc-card flex items-center gap-3 px-4 py-3 text-left transition"
+							:class="
+								settings.theme === option.id
+									? 'ring-2 ring-[rgb(var(--pc-text))]'
+									: 'hover:bg-[rgb(var(--pc-card-alt))]'
+							"
+							@click="save('theme', option.id)"
+						>
+							<span
+								aria-hidden="true"
+								class="flex h-8 w-12 shrink-0 overflow-hidden rounded-md border"
+								:style="{
+									backgroundColor: `rgb(${option.swatch.bg})`,
+									borderColor: `rgb(${option.swatch.line})`
+								}"
+							>
+								<span
+									class="h-full w-1/2"
+									:style="{ backgroundColor: `rgb(${option.swatch.accent})` }"
+								/>
+								<span
+									class="flex flex-1 flex-col justify-center gap-1 px-1"
+								>
+									<span
+										class="block h-1 w-full rounded-full"
+										:style="{ backgroundColor: `rgb(${option.swatch.text})` }"
+									/>
+									<span
+										class="block h-1 w-2/3 rounded-full"
+										:style="{ backgroundColor: `rgb(${option.swatch.muted})` }"
+									/>
+								</span>
+							</span>
+							<span class="min-w-0">
+								<span class="block truncate font-medium">{{ option.label }}</span>
+								<span class="block truncate text-xs text-muted">{{ option.note }}</span>
+							</span>
+						</button>
+					</div>
 				</div>
 			</div>
 		</section>

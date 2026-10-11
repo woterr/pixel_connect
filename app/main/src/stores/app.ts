@@ -131,10 +131,29 @@ export const useAppStore = defineStore('app', () => {
 		if (adbResult.status === 'fulfilled') adbDevices.value = adbResult.value
 	}
 
+	/**
+	 * Apply a theme by writing `data-theme` on the document element.
+	 *
+	 * The light theme's stylesheet existed but nothing ever set the class that
+	 * selects it, so it was unreachable - the same mistake as the autostart
+	 * setting: the capability was present and nothing applied it.
+	 *
+	 * An unknown value is left to fall back to `:root`, which is the dark
+	 * default, so a corrupt stored value cannot leave the interface unstyled.
+	 */
+	function applyTheme(name: string | undefined | null) {
+		if (typeof document === 'undefined') return
+		if (name) document.documentElement.setAttribute('data-theme', name)
+		else document.documentElement.removeAttribute('data-theme')
+	}
+
 	async function bootstrap() {
 		try {
 			info.value = await api.appInfo()
 			settings.value = await api.getSettings()
+			// Applied before anything renders, so the interface never flashes the
+			// wrong theme on start-up.
+			applyTheme(settings.value.theme)
 			clipboardCaps.value = await api.clipboardCapabilities()
 			tools.value = await api.adbDetect()
 			filemanager.value = await api.filemanagerStatus()
@@ -194,6 +213,7 @@ export const useAppStore = defineStore('app', () => {
 		// state
 		info,
 		settings,
+		applyTheme,
 		devices,
 		shares,
 		notifications,
