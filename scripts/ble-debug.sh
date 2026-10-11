@@ -26,11 +26,39 @@
 
 set -uo pipefail
 
-OUT_DIR="${BLE_DEBUG_DIR:-/tmp/opencode/ble-debug}"
+# A fresh directory per run.
+#
+# Writing into one shared directory broke as soon as this script was run both
+# ways. The earlier sudo run created /tmp/opencode/ble-debug owned by root, and
+# the unprivileged run then could not write its own log into it, so it failed
+# with "Permission denied" and reported the stale root-owned log as if it were
+# the current run's - which is exactly how a failure gets attributed to the
+# wrong thing.
+#
+# Timestamping keeps every run's captures intact and removes the collision
+# entirely, so runs cannot read each other's files by accident.
+OUT_BASE="${BLE_DEBUG_DIR:-/tmp/opencode/ble-debug}"
+OUT_DIR="$OUT_BASE/run-$(date +%H%M%S)"
+
+# Fall back rather than fail. A run made with sudo before that became
+# unnecessary left /tmp/opencode/ble-debug owned by root, and every unprivileged
+# run after it died with "Permission denied" on its own log file. Falling back
+# keeps the tool usable instead of leaving it broken for whoever hit it next.
+if ! mkdir -p "$OUT_DIR" 2>/dev/null; then
+    OUT_BASE="$HOME/.cache/pixel-connect/ble-debug"
+    OUT_DIR="$OUT_BASE/run-$(date +%H%M%S)"
+    if ! mkdir -p "$OUT_DIR" 2>/dev/null; then
+        echo "Cannot create a capture directory under $OUT_BASE either."
+        echo "Set BLE_DEBUG_DIR to somewhere writable and try again."
+        exit 1
+    fi
+    echo "  note: the usual capture directory is not writable, using $OUT_BASE"
+fi
+
 HCI_LOG="$OUT_DIR/dbus.log"
 APP_LOG="$OUT_DIR/app.log"
 
-mkdir -p "$OUT_DIR"
+echo "  captures will be written to $OUT_DIR"
 
 banner() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
@@ -116,11 +144,36 @@ analyse() {
 EOS
 }
 
+# Put the machine back the way it was.
+#
+# The debug run starts Pixel Connect with PIXEL_CONNECT_BLE_RX=1 so the phone
+# can find it over BLE. Leaving that instance running afterwards would leave
+# the application advertising BLE by default, which makes the phone prefer
+# BLE over the network route. That route is the one known to work, so a
+# diagnostic run must not silently become the permanent configuration.
+restore() {
+    pkill -x pixel-connect >/dev/null 2>&1
+    sleep 2
+    setsid "$APP_BIN" >/dev/null 2>&1 < /dev/null &
+    sleep 3
+    if pgrep -x pixel-connect >/dev/null; then
+        echo "  Pixel Connect restarted with default settings (BLE not advertised)."
+    else
+        echo "  WARNING: could not restart Pixel Connect. Start it yourself:"
+        echo "      $APP_BIN"
+    fi
+}
+
 cleanup() {
     echo
     kill "${DBUS_PID:-0}" >/dev/null 2>&1
     wait "${DBUS_PID:-0}" 2>/dev/null
     analyse
+    echo
+    banner "Restoring defaults"
+    restore
+    echo
+    echo "Captures kept in: $OUT_DIR"
     exit 0
 }
 
