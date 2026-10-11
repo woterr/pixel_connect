@@ -14,6 +14,11 @@ tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
 anyhow = "1.0"
+# Decodes a received image so it can be put on the clipboard. PNG, JPEG, GIF,
+# BMP and WebP, which covers what a phone actually sends from its camera and
+# gallery. Only the formats `arboard` can hand to the clipboard server matter,
+# so this is not an arbitrary dependency.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 fern = { version = "0.7", features = ["colored"] }
 humantime = "2.1"
 log = "0.4"

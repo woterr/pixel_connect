@@ -805,7 +805,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                     done: true,
                     cancelled: false,
                     error: Some("The phone did not open the file transfer connection".into()),
-                })));
+                saved_path: None,
+            })));
                 crate::cancel::finish(&transfer_id);
                 return;
             };
@@ -832,7 +833,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                         done: true,
                         cancelled: false,
                         error: Some(format!("TLS handshake failed: {e}")),
-                    })));
+                saved_path: None,
+            })));
                     return;
                 }
             };
@@ -865,7 +867,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                         done: true,
                         cancelled: true,
                         error: None,
-                    })));
+                saved_path: None,
+            })));
                     return;
                 }
                 if let Err(e) = stream.write_all(&buf[..n]).await {
@@ -883,7 +886,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                         done: false,
                         cancelled: false,
                         error: None,
-                    })));
+                saved_path: None,
+            })));
                     last_emit = std::time::Instant::now();
                 }
             }
@@ -903,6 +907,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
                 done: true,
                 cancelled: false,
                 error: None,
+                saved_path: None,
             })));
         });
 
@@ -927,7 +932,8 @@ fn emit_error(
         done: true,
         cancelled: false,
         error: Some(error.to_string()),
-    })));
+                saved_path: None,
+            })));
 }
 
 /// Accept the dedicated payload connection for an incoming file share.
@@ -1045,7 +1051,8 @@ fn spawn_payload_receiver(
                     done: true,
                     cancelled: true,
                     error: None,
-                })));
+                saved_path: None,
+            })));
                 return;
             }
             match tls.read(&mut buf).await {
@@ -1084,7 +1091,8 @@ fn spawn_payload_receiver(
                                 done: false,
                                 cancelled: false,
                                 error: None,
-                            })));
+                saved_path: None,
+            })));
                         last_emit = std::time::Instant::now();
                     }
                 }
@@ -1154,6 +1162,11 @@ fn spawn_payload_receiver(
             done: true,
             cancelled: false,
             error: None,
+            // Report where it actually landed. The filename above is only the
+            // final component, and the incoming folder may have been
+            // reconfigured mid-transfer, so the application cannot derive the
+            // path itself.
+            saved_path: Some(dest.to_string_lossy().to_string()),
         })));
     })
 }

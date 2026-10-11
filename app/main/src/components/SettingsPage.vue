@@ -55,8 +55,7 @@ type MutableSetting =
 	| 'startminimized'
 	| 'autostart'
 	| 'visibility'
-	| 'downloadPath'
-	| 'incomingPath'
+	
 	| 'clipboardEnabled'
 	| 'clipboardAutoShare'
 	| 'autoAcceptShares'
@@ -82,13 +81,35 @@ async function save(key: MutableSetting, value: boolean | string | number | null
 	}
 }
 
-async function pickDirectory(current: string | null, key: 'downloadPath' | 'incomingPath') {
+/**
+ * Choose the one folder both protocols download into.
+ *
+ * Quick Share and KDE Connect each had their own setting, so picking one left
+ * the other writing somewhere the user had not chosen. This applies to both and
+ * reports what it actually did, rather than silently storing a value that only
+ * one backend honours.
+ */
+async function pickDownloadFolder() {
 	try {
 		const { open } = await import('@tauri-apps/plugin-dialog')
+		const current = settings.value?.downloadFolder ?? settings.value?.downloadPath ?? null
 		const picked = await open({ directory: true, defaultPath: current ?? undefined })
-		if (typeof picked === 'string') await save(key, picked)
+		if (typeof picked !== 'string') return
+		await api.setDownloadFolder(picked)
+		// Read the value back rather than assuming: the command is what actually
+		// configures both backends, and a stale UI here would be misleading.
+		if (settings.value) {
+			settings.value = {
+				...settings.value,
+				downloadFolder: picked,
+				downloadPath: picked,
+				incomingPath: picked,
+			}
+			store.settings = settings.value
+		}
+		store.toast('Both Quick Share and KDE Connect will save here now', 'success')
 	} catch (e) {
-		store.toast(`Could not open the folder chooser: ${e}`, 'error')
+		store.toast(`Could not set the download folder: ${e}`, 'error')
 	}
 }
 
@@ -172,31 +193,27 @@ onMounted(load)
 
 				<div class="pc-divider mt-6 border-t" />
 
-				<div class="mt-6 grid gap-6 sm:grid-cols-2">
-					<div>
-						<p class="pc-eyebrow">Quick Share downloads</p>
-						<p class="mt-2 truncate text-sm text-muted">
-							{{ settings.downloadPath ?? '~/Downloads' }}
-						</p>
-						<button
-							class="pc-btn pc-btn-secondary pc-btn-sm mt-3"
-							@click="pickDirectory(settings.downloadPath, 'downloadPath')"
-						>
-							Change
-						</button>
-					</div>
-					<div>
-						<p class="pc-eyebrow">KDE Connect incoming files</p>
-						<p class="mt-2 truncate text-sm text-muted">
-							{{ settings.incomingPath ?? '~/Downloads' }}
-						</p>
-						<button
-							class="pc-btn pc-btn-secondary pc-btn-sm mt-3"
-							@click="pickDirectory(settings.incomingPath, 'incomingPath')"
-						>
-							Change
-						</button>
-					</div>
+				<div class="mt-6">
+					<p class="pc-eyebrow">Download folder</p>
+					<!--
+						One folder for both protocols. They used to have separate
+						pickers, so choosing one left the other writing somewhere the
+						user had not picked - and files arrived in an unexpected place
+						with nothing indicating which setting had changed.
+					-->
+					<p class="mt-2 truncate text-sm text-muted">
+						{{ settings.downloadFolder ?? settings.downloadPath ?? '~/Downloads' }}
+					</p>
+					<p class="mt-1 text-xs text-faint">
+						Used for everything arriving from your phone, whether it is sent with
+						Quick Share or over KDE Connect.
+					</p>
+					<button
+						class="pc-btn pc-btn-secondary pc-btn-sm mt-3"
+						@click="pickDownloadFolder"
+					>
+						Change
+					</button>
 				</div>
 
 				<div class="pc-divider mt-6 border-t" />

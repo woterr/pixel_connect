@@ -270,6 +270,92 @@ pub fn set_text(text: String) {
     tauri::async_runtime::spawn(async move { set_text_blocking(text) });
 }
 
+/// Whether `path` looks like an image this function can decode.
+///
+/// Extension only, and only to avoid decoding a large video. The real check is
+/// whether the bytes decode, so a `.png` that is actually a text file is
+/// rejected rather than put on the clipboard as a broken image.
+pub fn is_probably_image(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp")
+    )
+}
+
+/// Put an image file on the clipboard.
+///
+/// Returns `Ok(false)` when the file is not a decodable image — which is the
+/// normal answer for a video, a document, or an image the clipboard server
+/// cannot represent. It is not an error worth surfacing: the file has already
+/// been saved, which is what matters.
+pub fn set_image_from_file(path: &std::path::Path) -> Result<bool, String> {
+    if !is_probably_image(path) {
+        return Ok(false);
+    }
+
+    // Read and decode before touching the clipboard, so a failure leaves
+    // whatever the user had copied intact.
+    //
+    // A file that will not decode is reported as "not an image" rather than an
+    // error. The extension said image but the bytes say otherwise, and the
+    // caller has already saved the file successfully - so this is a normal
+    // outcome, not something the user can act on. Only failing to *read* the
+    // file is a real error, because that means the save did not really happen.
+    let raw = match std::fs::read(path) {
+        Ok(raw) => raw,
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let Ok(decoded) = image::load_from_memory(&raw) else {
+        log::debug!("{} is not a readable image", path.display());
+        return Ok(false);
+    };
+    let decoded = decoded.to_rgba8();
+
+    let (width, height) = (decoded.width() as usize, decoded.height() as usize);
+    let pixels = decoded.into_raw();
+
+    match place_image(width, height, pixels) {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            // The clipboard server is the usual reason: a Wayland compositor
+            // with no data-control protocol cannot take an image from an
+            // unfocused client.
+            log::warn!("could not place {} on the clipboard: {e}", path.display());
+            Ok(false)
+        }
+    }
+}
+
+/// Hand an RGBA image to the clipboard, reusing the cached handle.
+///
+/// The handle is cached for the same reason the text path caches it: building
+/// one per call logs a Wayland fallback warning every time, and the watcher
+/// runs often.
+fn place_image(width: usize, height: usize, pixels: Vec<u8>) -> Result<(), arboard::Error> {
+    use std::sync::Mutex;
+    static HANDLE: std::sync::OnceLock<Mutex<Option<arboard::Clipboard>>> =
+        std::sync::OnceLock::new();
+    let cell = HANDLE.get_or_init(|| Mutex::new(None));
+
+    let mut guard = cell
+        .lock()
+        .map_err(|_| arboard::Error::ContentNotAvailable)?;
+    if guard.is_none() {
+        *guard = arboard::Clipboard::new().ok();
+    }
+    guard
+        .as_mut()
+        .ok_or(arboard::Error::ContentNotAvailable)?
+        .set_image(arboard::ImageData {
+            width,
+            height,
+            bytes: pixels.into(),
+        })
+}
+
 /// The clipboard the application last applied locally, so it can be echoed back
 /// to the phone exactly once and never looped.
 ///
@@ -502,5 +588,123 @@ mod tests {
             ClipboardMechanism::None,
             "no display server in this session"
         );
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn only_decodable_image_extensions_are_considered() {
+        let cases = [
+            ("a.png", true),
+            ("a.PNG", true),
+            ("a.jpg", true),
+            ("a.jpeg", true),
+            ("a.gif", true),
+            ("a.webp", true),
+            ("a.bmp", true),
+            // Not images: these must never be read as image data.
+            ("a.mp4", false),
+            ("a.pdf", false),
+            ("a.txt", false),
+            ("a", false),
+        ];
+        for (name, expected) in cases {
+            let p = std::path::Path::new(name);
+            assert_eq!(
+                is_probably_image(p),
+                expected,
+                "{name} was classified wrongly"
+            );
+        }
+    }
+
+    /// A file that is not a decodable image must report "not an image", not an
+    /// error. The caller has already saved the file, so a decode failure is
+    /// not something the user needs to act on.
+    #[test]
+    fn a_non_image_reports_false_rather_than_failing() {
+        let dir = std::env::temp_dir().join("pixel-connect-img-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let fake = dir.join("pretend.png");
+        std::fs::write(&fake, b"this is not a png").unwrap();
+        let out = set_image_from_file(&fake);
+        assert!(matches!(out, Ok(false)), "got {out:?}");
+        let _ = std::fs::remove_file(&fake);
+    }
+
+    /// Real PNG bytes must round-trip through the decoder. This is what proves
+    /// the feature works rather than merely compiling.
+    #[test]
+    fn a_real_png_decodes() {
+        // A 2x1 PNG, built by hand so the test carries no binary fixture.
+        let mut png: Vec<u8> = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
+        ];
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&2u32.to_be_bytes()); // width
+        ihdr.extend_from_slice(&1u32.to_be_bytes()); // height
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA
+        push_chunk(&mut png, b"IHDR", &ihdr);
+
+        // One filter byte then two RGBA pixels.
+        let mut raw = vec![0u8];
+        raw.extend_from_slice(&[255, 0, 0, 255]);
+        raw.extend_from_slice(&[0, 0, 255, 255]);
+        push_chunk(&mut png, b"IDAT", &zlib_store(&raw));
+        push_chunk(&mut png, b"IEND", &[]);
+
+        let decoded = image::load_from_memory(&png).expect("a valid PNG must decode");
+        let rgba = decoded.to_rgba8();
+        assert_eq!((rgba.width(), rgba.height()), (2, 1));
+        assert_eq!(&rgba.into_raw()[..4], &[255, 0, 0, 255]);
+    }
+
+    fn push_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let mut crc_input = Vec::new();
+        crc_input.extend_from_slice(kind);
+        crc_input.extend_from_slice(data);
+        out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+    }
+
+    /// A zlib stream using stored (uncompressed) deflate blocks, so the test
+    /// needs no compression dependency.
+    fn zlib_store(data: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x78, 0x01]; // zlib header, no compression
+        let mut i = 0;
+        while i < data.len() {
+            let take = (data.len() - i).min(0xFFFF);
+            let last = if i + take >= data.len() { 1u8 } else { 0u8 };
+            out.push(last);
+            out.extend_from_slice(&(take as u16).to_le_bytes());
+            out.extend_from_slice(&(!(take as u16)).to_le_bytes());
+            out.extend_from_slice(&data[i..i + take]);
+            i += take;
+        }
+        // Adler-32 of the uncompressed data.
+        let (mut a, mut b) = (1u32, 0u32);
+        for &byte in data {
+            a = (a + byte as u32) % 65521;
+            b = (b + a) % 65521;
+        }
+        out.extend_from_slice(&(((b << 16) | a).to_be_bytes()));
+        out
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in data {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
     }
 }

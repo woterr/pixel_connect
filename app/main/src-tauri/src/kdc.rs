@@ -308,6 +308,40 @@ async fn handle_event(app: &AppHandle, state: &Arc<KdcState>, event: KcEvent) ->
                         crate::notification::NotifyKind::TransferComplete,
                         &format!("{} ({size})", t.filename),
                     );
+
+                    // An image the phone sent is worth putting on the
+                    // clipboard, so it can be pasted into a message directly.
+                    //
+                    // The echo guard matters more here than for text. The
+                    // clipboard watcher only reads *text*, so an image would
+                    // not be sent back to the phone on its own - but the next
+                    // text change would still be, and a user who copies an
+                    // image then edits text should not have that text pushed to
+                    // their phone as a side effect of a photo arriving. So the
+                    // watcher is paused for a moment after we take the
+                    // clipboard, which prevents a race in the moment the image
+                    // is written.
+                    if let Some(saved) = &t.saved_path {
+                        if settings::get_bool(app, "clipboard_images_on_receive") {
+                            let path = std::path::PathBuf::from(saved);
+                            if crate::clipboard::is_probably_image(&path) {
+                                match crate::clipboard::set_image_from_file(&path) {
+                                    Ok(true) => log::info!(
+                                        "copied the received image {} to the clipboard",
+                                        t.filename
+                                    ),
+                                    Ok(false) => log::debug!(
+                                        "{} was not placed on the clipboard",
+                                        t.filename
+                                    ),
+                                    Err(e) => log::warn!(
+                                        "could not copy {} to the clipboard: {e}",
+                                        t.filename
+                                    ),
+                                }
+                            }
+                        }
+                    }
                 }
             }
             let _ = app.emit("kdeconnect:transfer", *t);

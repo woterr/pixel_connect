@@ -105,6 +105,12 @@ pub struct TransferProgress {
     /// payload connection rather than a message the peer sent.
     pub cancelled: bool,
     pub error: Option<String>,
+    /// Where a *received* file was saved, once it is complete.
+    ///
+    /// The application needs the real path to offer the file afterwards - to put
+    /// an image on the clipboard, or to reveal it in the file manager. Absent
+    /// for outgoing transfers, and for a failed one, where nothing was written.
+    pub saved_path: Option<String>,
 }
 
 /// A notification received from a peer via the notification plugin.
