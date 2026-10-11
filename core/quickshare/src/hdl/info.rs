@@ -32,4 +32,12 @@ pub struct TransferMetadata {
 
     pub total_bytes: u64,
     pub ack_bytes: u64,
+
+    /// Where received files were actually saved, filled in as each completes.
+    ///
+    /// The application cannot work this out for itself: the metadata carries
+    /// only file *names*, and the download folder may be changed between the
+    /// transfer starting and each file arriving.
+    #[serde(default)]
+    pub saved_paths: Vec<String>,
 }

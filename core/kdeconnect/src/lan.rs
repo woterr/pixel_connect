@@ -417,6 +417,7 @@ impl LanLinkProvider {
             inbound_connections: Arc::new(Semaphore::new(MAX_INBOUND_CONNECTIONS)),
             link_history: Arc::new(Mutex::new(HashMap::new())),
             dialing: Arc::new(Mutex::new(HashSet::new())),
+            notifications: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -578,6 +579,14 @@ pub struct LinkContext {
     /// same peer, and two simultaneous links fight over the slot. Reserving
     /// before dialling closes that window.
     dialing: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Notifications received from a peer, newest first.
+    ///
+    /// Held here rather than on `DeviceLink` so they **survive a reconnect**.
+    /// Per-link storage started empty on every new link, so when the phone sent
+    /// `notification.request` after reconnecting it was answered with an empty
+    /// list and the phone re-fetched everything - showing the same handful of
+    /// notifications afresh each time, several times a minute.
+    notifications: Arc<Mutex<HashMap<String, Vec<crate::types::RemoteNotification>>>>,
 }
 
 /// What happened when a link to a peer ended.
@@ -632,6 +641,36 @@ impl LinkContext {
 
     pub async fn clear_dialing(&self, device_id: &str) {
         self.dialing.lock().await.remove(device_id);
+    }
+
+    /// Store a notification for a peer, replacing any earlier one with the same
+    /// id and bounding the list.
+    pub async fn note_notification(
+        &self,
+        device_id: &str,
+        notification: crate::types::RemoteNotification,
+    ) {
+        /// Bound the list: a chatty app must not grow memory without limit.
+        const MAX_NOTIFICATIONS: usize = 100;
+
+        let mut per_peer = self.notifications.lock().await;
+        let list = per_peer.entry(device_id.to_string()).or_default();
+        list.retain(|n| n.id != notification.id);
+        list.insert(0, notification);
+        list.truncate(MAX_NOTIFICATIONS);
+    }
+
+    /// Notifications held for a peer, oldest last.
+    pub async fn notifications_for(
+        &self,
+        device_id: &str,
+    ) -> Vec<crate::types::RemoteNotification> {
+        self.notifications
+            .lock()
+            .await
+            .get(device_id)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 

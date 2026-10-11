@@ -72,6 +72,48 @@ pub fn spawn_forwarders(app: AppHandle) {
                         // `LibToFront` (`inbound.rs`, `update_state`) - so the
                         // notification could not fire and the offer was
                         // reachable only by opening the window.
+                        // A received image is worth putting on the clipboard, so a photo
+                        // from the phone can be pasted straight into a message.
+                        //
+                        // Only the *last* file is considered: several images at
+                        // once would leave the clipboard holding whichever
+                        // happened to finish last, which is arbitrary. Non-image
+                        // files are left alone, and a decode failure is not an
+                        // error - the file is already saved either way.
+                        if msg.state == Some(pixel_connect_quickshare::State::Finished) {
+                            let images = msg
+                                .meta
+                                .as_ref()
+                                .map(|m| m.saved_paths.clone())
+                                .unwrap_or_default();
+                            if images.len() == 1 {
+                                let path = std::path::PathBuf::from(&images[0]);
+                                if settings::get_bool(&app, "clipboard_images_on_receive")
+                                    && crate::clipboard::is_probably_image(&path)
+                                {
+                                    match crate::clipboard::set_image_from_file(&path) {
+                                        Ok(true) => log::info!(
+                                            "copied the Quick Share image {} to the clipboard",
+                                            path.display()
+                                        ),
+                                        Ok(false) => log::debug!(
+                                            "{} was not placed on the clipboard",
+                                            path.display()
+                                        ),
+                                        Err(e) => log::warn!(
+                                            "could not copy {} to the clipboard: {e}",
+                                            path.display()
+                                        ),
+                                    }
+                                }
+                            } else if images.len() > 1 {
+                                log::debug!(
+                                    "{} files arrived; not choosing one for the clipboard",
+                                    images.len()
+                                );
+                            }
+                        }
+
                         if msg.state
                             == Some(pixel_connect_quickshare::State::WaitingForUserConsent)
                         {

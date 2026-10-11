@@ -669,7 +669,27 @@ impl InboundRequest {
                             )
                             .await;
                         } else if (chunk.flags() & 1) == 1 {
-                            self.state.transferred_files.remove(&payload_id);
+                            if let Some(done) = self.state.transferred_files.remove(&payload_id)
+                            {
+                                // Record where each file landed. The application
+                                // needs the real path to put a received image on
+                                // the clipboard, and it cannot derive one: only
+                                // the name is in the metadata, and the download
+                                // folder can be reconfigured mid-transfer.
+                                let saved = done
+                                    .file_url
+                                    .to_string_lossy()
+                                    .to_string();
+                                self.update_state(
+                                    |e| {
+                                        if let Some(tmd) = e.transfer_metadata.as_mut() {
+                                            tmd.saved_paths.push(saved);
+                                        }
+                                    },
+                                    false,
+                                )
+                                .await;
+                            }
                             if self.state.transferred_files.is_empty() {
                                 info!("Transfer finished");
                                 self.update_state(

@@ -51,7 +51,10 @@ export function formatDuration(seconds: number): string {
 /** Relative time for "2m ago" style labels. */
 export function timeAgo(unixSeconds: number | null | undefined): string {
 	if (!unixSeconds) return 'never'
-	const delta = Math.floor(Date.now() / 1000) - unixSeconds
+	// A timestamp in the future means the peer's clock is ahead, or one was
+	// written before ours caught up. Showing a negative "in Ns" would be
+	// nonsense, so clamp to zero rather than rendering something absurd.
+	const delta = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds)
 	if (delta < 5) return 'now'
 	if (delta < 60) return `${delta}s ago`
 	if (delta < 3600) return `${Math.floor(delta / 60)}m ago`

@@ -130,7 +130,7 @@ where
         peer: peer_info,
         peer_spki,
         peer_cert_pem,
-        notifications: Vec::new(),
+        notifications_sent: false,
         peer_addr,
         trusted,
         pairing: PairingHandler::new(),
@@ -169,9 +169,11 @@ pub struct DeviceLink<S: AsyncRead + AsyncWrite + Unpin> {
     ctx: Arc<LinkContext>,
     reader: LineReader<tokio::io::ReadHalf<TlsStream<S>>>,
     writer: PacketWriter<tokio::io::WriteHalf<TlsStream<S>>>,
-    /// Notifications seen on this link, newest first. Reactions look the peer
-    /// keys up here so a stale UI cannot act on a notification that is gone.
-    notifications: Vec<crate::types::RemoteNotification>,
+    /// Whether this link has already answered a `notification.request`.
+    ///
+    /// Notifications themselves live on `LinkContext`, not here, so they
+    /// survive a reconnect; this flag only stops one link echoing them twice.
+    notifications_sent: bool,
     peer: DeviceInfo,
     peer_spki: Vec<u8>,
     /// The peer's TLS certificate in PEM, pinned once pairing completes.
@@ -679,13 +681,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
         );
 
         // Replace any earlier notification with the same id rather than
-        // accumulating duplicates.
-        self.notifications
-            .retain(|n: &crate::types::RemoteNotification| n.id != notification.id);
-        self.notifications.insert(0, notification.clone());
-        // Bound the list: a chatty app must not grow memory without limit.
-        const MAX_NOTIFICATIONS: usize = 100;
-        self.notifications.truncate(MAX_NOTIFICATIONS);
+        // accumulating duplicates, and keep it in the context so it survives a
+        // reconnect. Per-link storage was emptied on every new link.
+        self.ctx.note_notification(&self.peer.id, notification.clone()).await;
 
         let _ = self.events.send(KcEvent::Notification {
             device_id: self.peer.id.clone(),
@@ -701,7 +699,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin> DeviceLink<S> {
         if !self.trusted {
             return Ok(());
         }
-        for n in self.notifications.iter().rev() {
+
+        // Answer only the first request on this link.
+        //
+        // The phone sends `notification.request` when it connects, and again
+        // after reconnecting. Echoing every stored notification each time made
+        // it re-show its whole history as fresh notifications - the repeated
+        // "fedora1" entries, several times a minute. The phone has already got
+        // them; sending them again achieves nothing except noise.
+        if self.notifications_sent {
+            debug!(
+                "{}: ignoring a repeat notification request; already sent",
+                self.peer.name
+            );
+            return Ok(());
+        }
+        self.notifications_sent = true;
+
+        // Read from the context rather than this link, so a reconnect still has
+        // something to answer with.
+        let held = self.ctx.notifications_for(&self.peer.id).await;
+        for n in held.iter().rev() {
             let mut out = p::NetworkPacket::new(p::PACKET_TYPE_NOTIFICATION);
             out.set("id", n.id.clone());
             out.set("appName", n.app_name.clone());
