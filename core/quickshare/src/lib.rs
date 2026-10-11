@@ -198,6 +198,25 @@ impl QuickShareService {
                     ),
                 }
             });
+            // Advertising 0xFEF3 makes the phone prefer BLE, and Quick Share
+            // then sticks at "connecting" because the weave payload path is not
+            // finished. That regressed the working mDNS/LAN transfer for
+            // everyone, so the advertisement is opt-in until the data path
+            // works.
+            //
+            // The GATT service above stays registered either way: it costs
+            // nothing and is what a completed implementation needs.
+            //
+            // PIXEL_CONNECT_BLE_RX=1 re-enables it for testing.
+            let ble_rx = std::env::var("PIXEL_CONNECT_BLE_RX")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            if !ble_rx {
+                info!(
+                    "Quick Share BLE receiver advertisement is off (PIXEL_CONNECT_BLE_RX \
+                     is not set); the phone will discover this machine over mDNS/LAN"
+                );
+            } else {
             let ctk_adv = ctoken.clone();
             let hostname_for_adv = hostname.clone();
             tracker.spawn(async move {
@@ -210,6 +229,7 @@ impl QuickShareService {
                     Err(e) => error!("could not start the Quick Share BLE advertiser: {e}"),
                 }
             });
+            }
         }
 
         // Start MDnsServer in own "task"

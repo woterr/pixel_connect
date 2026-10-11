@@ -168,7 +168,20 @@ impl KdeConnectService {
     pub async fn broadcast_clipboard(&self, content: String) -> Result<usize> {
         let mut sent = 0;
         for device in self.devices().await {
-            if device.link_state != LinkState::Connected || !device.trusted {
+            // Name the reason a device was skipped. This filter silently
+            // dropped every device while the clipboard appeared broken, and a
+            // bare `continue` gives no way to tell "not connected yet" from
+            // "not trusted" from "no clipboard capability" - three very
+            // different problems with three different fixes.
+            if device.link_state != LinkState::Connected {
+                trace!(
+                    "clipboard: skipping {} ({:?} link)",
+                    device.name, device.link_state
+                );
+                continue;
+            }
+            if !device.trusted {
+                trace!("clipboard: skipping {} (not trusted here)", device.name);
                 continue;
             }
             if !device
@@ -176,6 +189,10 @@ impl KdeConnectService {
                 .iter()
                 .any(|c| c == packet::PACKET_TYPE_CLIPBOARD)
             {
+                trace!(
+                    "clipboard: skipping {} (advertises {:?})",
+                    device.name, device.incoming_capabilities
+                );
                 continue;
             }
             let mut np = NetworkPacket::new(packet::PACKET_TYPE_CLIPBOARD);
