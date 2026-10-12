@@ -71,6 +71,10 @@ export interface Settings {
 	 * Applied by writing `data-theme` on the document element.
 	 */
 	theme: string
+	/** Accent for `data-accent`. Persisted by the backend like theme. */
+	accent: string
+	/** Reduce animations when true. */
+	reduceMotion: boolean
 	visibility: number
 	port: number | null
 	downloadPath: string | null

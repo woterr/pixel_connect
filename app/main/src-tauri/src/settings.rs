@@ -25,6 +25,20 @@ pub const THEMES: &[&str] = &[
     "midnight",
     "contrast-dark",
     "contrast-light",
+    // Material 3 Expressive set. Old values keep working; the frontend maps
+    // dark->simple-dark, light->simple-light, midnight->space-dark.
+    "amoled",
+    "space-dark",
+    "simple-dark",
+    "simple-light",
+    "white-light",
+    "system",
+];
+
+/// Accent choices for `data-accent`. Seeds live in the frontend token file;
+/// the backend only persists the choice.
+pub const ACCENTS: &[&str] = &[
+    "purple", "blue", "pink", "green", "yellow", "brown", "gray", "white",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +57,11 @@ pub struct Settings {
     /// Anything else falls back to `dark` when applied, so an unknown or
     /// corrupt value cannot leave the interface unreadable.
     pub theme: String,
+    /// Accent for `data-accent` (purple/blue/pink/green/yellow/brown/gray/white).
+    /// Anything else falls back to the default when applied.
+    pub accent: String,
+    /// Reduce animations: disables springs/translations, fades only.
+    pub reduce_motion: bool,
     /// Google Quick Share advertising visibility (0 visible, 1 invisible, 2 temporary).
     pub visibility: u8,
     /// Optional fixed TCP port for the Quick Share service.
@@ -99,6 +118,8 @@ impl Default for Settings {
             // having to launch it first.
             autostart: true,
             theme: "dark".to_string(),
+            accent: "green".to_string(),
+            reduce_motion: false,
             visibility: 0,
             port: None,
             download_folder: None,
@@ -162,6 +183,15 @@ pub fn load(app: &AppHandle) -> Settings {
             .and_then(|v| v.as_str().map(str::to_string))
             .filter(|t| THEMES.contains(&t.as_str()))
             .unwrap_or(d.theme),
+        accent: s
+            .get("accent")
+            .and_then(|v| v.as_str().map(str::to_string))
+            .filter(|t| ACCENTS.contains(&t.as_str()))
+            .unwrap_or(d.accent),
+        reduce_motion: s
+            .get("reduce_motion")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(d.reduce_motion),
         visibility: s
             .get("visibility")
             .and_then(|v| v.as_u64())
@@ -235,6 +265,9 @@ pub fn save(app: &AppHandle, settings: &Settings) -> anyhow::Result<()> {
     s.set("realclose", settings.realclose);
     s.set("startminimized", settings.startminimized);
     s.set("autostart", settings.autostart);
+    s.set("theme", settings.theme.clone());
+    s.set("accent", settings.accent.clone());
+    s.set("reduce_motion", settings.reduce_motion);
     s.set("visibility", settings.visibility);
     s.set("port", settings.port);
     s.set("download_folder", settings.download_folder.clone());
