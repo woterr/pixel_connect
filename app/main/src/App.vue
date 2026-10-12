@@ -12,7 +12,7 @@ import FilesPage from './components/FilesPage.vue'
 import NotificationsPage from './components/NotificationsPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import SideMenu, { type ViewName } from './components/SideMenu.vue'
-import BrandMark from './components/atoms/BrandMark.vue'
+import LogoSprite from './components/atoms/LogoSprite.vue'
 import PcIcon from './components/atoms/PcIcon.vue'
 import ToastMessage from './components/atoms/ToastMessage.vue'
 import { useAppStore } from './stores/app'
@@ -202,6 +202,7 @@ onBeforeUnmount(() => {
 
 <template>
 	<div class="flex h-full w-full flex-col overflow-hidden bg-ink text-ink">
+		<LogoSprite />
 
 
 		<div class="flex min-h-0 w-full flex-1">

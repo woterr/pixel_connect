@@ -759,6 +759,34 @@ impl LinkContext {
         self.identity.load().as_ref().clone()
     }
 
+    /// Publish the truth about a peer's link, derived from the live link map.
+    ///
+    /// `establish_incoming` and `handle_outgoing` used to set `Connecting`
+    /// before the handshake and leave it there on every failure path, so a
+    /// refused replacement socket or a failed dial flipped a healthy device to
+    /// unreachable and never flipped it back - while its existing link kept
+    /// delivering packets. The only honest states here come from the link map:
+    /// a sender exists or it does not. Upstream derives reachability the same
+    /// way (`Device::isReachable` is `!m_deviceLinks.isEmpty()`), separately
+    /// from paired state.
+    pub(crate) async fn republish_link_state(&self, peer_id: &str) {
+        let connected = self.links.lock().await.contains_key(peer_id);
+        let mut devices = self.devices.write().await;
+        if let Some(d) = devices.get_mut(peer_id) {
+            d.link_state = if connected {
+                LinkState::Connected
+            } else {
+                LinkState::Disconnected
+            };
+            if !connected {
+                d.transport = Transport::None;
+            }
+            let snapshot = d.clone();
+            drop(devices);
+            let _ = self.events.send(KcEvent::Device(Box::new(snapshot)));
+        }
+    }
+
     pub(crate) async fn publish_partial(&self, id: &str, f: impl FnOnce(&mut KcDevice)) {
         let mut devices = self.devices.write().await;
         if let Some(d) = devices.get_mut(id) {
@@ -975,15 +1003,11 @@ async fn establish_incoming(
 
     let socket = reader.into_inner();
     let trusted = ctx.config.lock().await.is_trusted(&peer_id);
-    if trusted {
-        ctx.publish_partial(&peer_id, |d| {
-            d.link_state = LinkState::Connecting;
-            d.transport = Transport::Lan;
-            d.address = Some(peer.to_string());
-            d.trusted = true;
-        })
-        .await;
-    }
+    // Deliberately no Connecting publish here. An earlier version set it before
+    // the handshake and never restored it on failure, so every refused
+    // replacement socket or failed handshake flipped a healthy device to
+    // unreachable while its existing link kept delivering. The link's own
+    // start publishes the state once it actually exists.
 
     // Enable TCP keepalive before TLS wraps the socket, matching upstream
     // `LanLinkProvider::configureSocket`. The kernel probes an idle link and
@@ -999,11 +1023,16 @@ async fn establish_incoming(
     }
 
     // TLS client on the accepted socket.
-    let tls_stream = ctx
-        .tls
-        .handshake(TlsRole::Client, socket)
-        .await
-        .context("TLS handshake (client role)")?;
+    let tls_stream = match ctx.tls.handshake(TlsRole::Client, socket).await {
+        Ok(s) => s,
+        Err(e) => {
+            // The replacement socket failed; say so about the socket, and
+            // republish whatever the link map actually holds - which may be a
+            // live link this failure must not clobber.
+            ctx.republish_link_state(&peer_id).await;
+            return Err(e).context("TLS handshake (client role)");
+        }
+    };
     let _ = &peer_id;
 
     // A link already exists for this peer.
@@ -1021,6 +1050,11 @@ async fn establish_incoming(
     // since the refused socket is closed immediately. Re-enable adoption only
     // once who initiates has been established from a capture.
     if existing.is_some() {
+        // The existing link stays up, so the record must keep saying so.
+        // Without this the pre-handshake state (or a stale Connecting from an
+        // earlier attempt) survives the refusal and the UI reports a device
+        // with a live link as unreachable.
+        ctx.republish_link_state(&peer_id).await;
         return Err(anyhow!(
             "a link to {peer_id} already exists; refusing the replacement socket"
         ));
@@ -1059,13 +1093,18 @@ async fn handle_outgoing(
     .await;
 
     let mut writer = PacketWriter::new(socket);
-    writer
+    if let Err(e) = writer
         .write_packet(
             &ctx.device_info()
                 .to_connection_packet(&info.id, info.protocol_version),
         )
         .await
-        .context("send connection identity")?;
+    {
+        // The dial failed; republish whatever the link map holds rather than
+        // leaving the Connecting set above stuck on a dead attempt.
+        ctx.republish_link_state(&info.id).await;
+        return Err(e).context("send connection identity");
+    }
     let socket = writer.into_inner();
 
     // Pinning is applied by `run_link`, which fetches the stored certificate
@@ -1073,11 +1112,13 @@ async fn handle_outgoing(
     // link is published. Deliberately not fetched here: holding a local
     // variable that is immediately discarded invites a reader to believe this
     // path is unpinned, when the enforcement is one call away and unconditional.
-    let tls_stream = ctx
-        .tls
-        .handshake(TlsRole::Server, socket)
-        .await
-        .context("TLS handshake (server role)")?;
+    let tls_stream = match ctx.tls.handshake(TlsRole::Server, socket).await {
+        Ok(s) => s,
+        Err(e) => {
+            ctx.republish_link_state(&info.id).await;
+            return Err(e).context("TLS handshake (server role)");
+        }
+    };
 
     let trusted = ctx.config.lock().await.is_trusted(&info.id);
     let devices = ctx.devices.clone();
@@ -1280,5 +1321,133 @@ mod tests {
         let l = bind_tcp_listener(MIN_TCP_PORT, MAX_TCP_PORT).await.unwrap();
         let p = l.local_addr().unwrap().port();
         assert!((MIN_TCP_PORT..=MAX_TCP_PORT).contains(&p));
+    }
+
+    /// Replay harness for the connection-state model: a device record plus a
+    /// link map, exercising exactly what `republish_link_state` derives.
+    mod link_state_replay {
+        use super::*;
+        use crate::deviceinfo::DeviceType;
+        use crate::pairing::PairState;
+
+        fn test_ctx() -> Arc<LinkContext> {
+            let dir = std::env::temp_dir().join(format!(
+                "pixel-connect-linkstate-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let config = crate::config::KdeConnectConfig::load(&dir).unwrap();
+            let ident = crate::crypto::generate_identity("local-test-id", None).unwrap();
+            let tls = crate::tls::TlsContext::new(&ident.cert_pem, &ident.key_pem).unwrap();
+            let info = crate::deviceinfo::DeviceInfo {
+                id: "local-test-id".into(),
+                name: "test".into(),
+                device_type: DeviceType::Desktop,
+                protocol_version: 8,
+                incoming_capabilities: vec![],
+                outgoing_capabilities: vec![],
+            };
+            Arc::new(LinkContext {
+                config: Arc::new(Mutex::new(config)),
+                tls: Arc::new(tls),
+                identity: Arc::new(arc_swap::ArcSwap::from_pointee(info)),
+                tcp_port: 0,
+                events: broadcast::channel(8).0,
+                devices: Arc::new(RwLock::new(HashMap::new())),
+                links: Arc::new(Mutex::new(HashMap::new())),
+                settings: Arc::new(RuntimeSettings {
+                    incoming_path: std::sync::Mutex::new(std::path::PathBuf::new()),
+                    clipboard_enabled: AtomicBool::new(true),
+                    auto_clipboard: AtomicBool::new(true),
+                }),
+                inbound_connections: Arc::new(Semaphore::new(MAX_INBOUND_CONNECTIONS)),
+                link_history: Arc::new(Mutex::new(HashMap::new())),
+                dialing: Arc::new(Mutex::new(HashSet::new())),
+                notifications: Arc::new(Mutex::new(HashMap::new())),
+            })
+        }
+
+        fn record(id: &str, state: LinkState) -> KcDevice {
+            KcDevice {
+                id: id.into(),
+                name: "Pixel 8".into(),
+                device_type: DeviceType::Phone,
+                protocol_version: 8,
+                pair_state: PairState::Paired,
+                link_state: state,
+                transport: Transport::Lan,
+                address: Some("192.168.1.2:1716".into()),
+                incoming_capabilities: vec![],
+                outgoing_capabilities: vec![],
+                features: vec![],
+                trusted: true,
+                verification_key: None,
+                protocol_error: None,
+                last_seen: 0,
+                battery_level: None,
+                battery_is_charging: None,
+            }
+        }
+
+        async fn claim_link(ctx: &LinkContext, id: &str) {
+            let (tx, _rx) = mpsc::channel::<LinkCommand>(1);
+            ctx.links.lock().await.insert(id.into(), tx);
+        }
+
+        fn state_of(ctx: &LinkContext, id: &str) -> Option<LinkState> {
+            ctx.devices.try_read().ok()?.get(id).map(|d| d.link_state)
+        }
+
+        /// The reported bug: a refused replacement socket left a healthy
+        /// device unreachable. Republish with a live link must say Connected.
+        #[tokio::test]
+        async fn a_live_link_republishes_to_connected() {
+            let ctx = test_ctx();
+            ctx.devices.write().await.insert("p".into(), record("p", LinkState::Connecting));
+            claim_link(&ctx, "p").await;
+            ctx.republish_link_state("p").await;
+            assert_eq!(state_of(&ctx, "p"), Some(LinkState::Connected));
+        }
+
+        /// The same call with no link must say Disconnected, and drop the
+        /// stale transport rather than claiming a route that is gone.
+        #[tokio::test]
+        async fn no_link_republishes_to_disconnected() {
+            let ctx = test_ctx();
+            ctx.devices.write().await.insert("p".into(), record("p", LinkState::Connecting));
+            ctx.republish_link_state("p").await;
+            assert_eq!(state_of(&ctx, "p"), Some(LinkState::Disconnected));
+            let t = ctx.devices.read().await.get("p").map(|d| d.transport);
+            assert_eq!(t, Some(Transport::None));
+        }
+
+        /// Full flap replay: connect, failed replacement (refused), link end.
+        /// The middle step is what used to stick the UI on unreachable.
+        #[tokio::test]
+        async fn flap_connect_refuse_close_tracks_the_link_map() {
+            let ctx = test_ctx();
+            ctx.devices.write().await.insert("p".into(), record("p", LinkState::Disconnected));
+            // Link established.
+            claim_link(&ctx, "p").await;
+            ctx.republish_link_state("p").await;
+            assert_eq!(state_of(&ctx, "p"), Some(LinkState::Connected));
+            // Replacement refused while the link is live: still Connected.
+            ctx.republish_link_state("p").await;
+            assert_eq!(state_of(&ctx, "p"), Some(LinkState::Connected));
+            // Link really ends: now Disconnected.
+            ctx.links.lock().await.remove("p");
+            ctx.republish_link_state("p").await;
+            assert_eq!(state_of(&ctx, "p"), Some(LinkState::Disconnected));
+        }
+
+        /// Unknown peers are left alone: no record is invented for them.
+        #[tokio::test]
+        async fn unknown_peers_gain_no_record() {
+            let ctx = test_ctx();
+            ctx.republish_link_state("ghost").await;
+            assert!(ctx.devices.read().await.get("ghost").is_none());
+        }
     }
 }

@@ -68,7 +68,7 @@ module.exports = {
 			},
 			fontFamily: {
 				sans: [
-					'Figtree',
+					'Google Sans Flex',
 					'Inter',
 					'system-ui',
 					'-apple-system',
@@ -77,7 +77,7 @@ module.exports = {
 					'sans-serif',
 				],
 				display: [
-					'Figtree',
+					'Google Sans Flex',
 					'Inter',
 					'system-ui',
 					'sans-serif',

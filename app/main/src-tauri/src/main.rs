@@ -130,6 +130,7 @@ async fn main() -> Result<(), anyhow::Error> {
             cmds::adb_devices,
             cmds::scrcpy_launch,
             cmds::scrcpy_stop,
+            cmds::adb_disconnect_wireless,
             cmds::scrcpy_running,
             cmds::clipboard_write_text,
             cmds::adb_list_wireless,

@@ -167,6 +167,9 @@ export const scrcpyLaunch = (serial: string, args: string[] = []) =>
 
 export const scrcpyStop = (serial: string) => invoke<boolean>('scrcpy_stop', { serial })
 
+export const adbDisconnectWireless = (serial: string) =>
+	invoke<void>('adb_disconnect_wireless', { serial })
+
 export const adbListWireless = () => invoke<WirelessTarget[]>('adb_list_wireless')
 
 export const adbConnectWireless = (address: string) =>

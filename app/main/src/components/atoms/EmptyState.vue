@@ -1,9 +1,8 @@
 <script setup lang="ts">
 // Pixel Connect — empty state.
 //
-// Brand mark slot (BrandMark by default), title, body, and an action slot.
+// Brand mark slot (logo tile by default), title, body, and an action slot.
 
-import BrandMark from './BrandMark.vue'
 
 withDefaults(
 	defineProps<{
@@ -19,7 +18,9 @@ withDefaults(
 	<div class="m3empty" role="status">
 		<span class="m3empty__mark">
 			<slot name="mark">
-				<BrandMark :size="markSize" />
+				<svg width="64" height="64" viewBox="0 0 108 108" role="img" aria-label="Pixel Connect logo">
+					<use href="#pc-logo" />
+				</svg>
 			</slot>
 		</span>
 		<h2 class="m3empty__title">{{ title }}</h2>

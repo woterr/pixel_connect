@@ -526,6 +526,11 @@ pub async fn scrcpy_stop(state: Shared<'_>, serial: String) -> Result<bool, Stri
     crate::adb::stop_scrcpy(state.inner().adb.as_ref(), &serial).await
 }
 
+#[tauri::command]
+pub async fn adb_disconnect_wireless(state: Shared<'_>, serial: String) -> Result<(), String> {
+    crate::adb::disconnect_wireless(state.inner().adb.as_ref(), &serial).await
+}
+
 /// Put text on the desktop clipboard.
 ///
 /// Used when the user asks for shared text to be copied, rather than reaching

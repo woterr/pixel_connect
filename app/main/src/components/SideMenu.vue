@@ -10,7 +10,7 @@
 
 import { computed, nextTick, ref, watch } from 'vue'
 
-import BrandMark from './atoms/BrandMark.vue'
+import LogoLockup from './atoms/LogoLockup.vue'
 import Dialog from './atoms/Dialog.vue'
 import Disclosure from './atoms/Disclosure.vue'
 import PcIcon from './atoms/PcIcon.vue'
@@ -109,10 +109,7 @@ function onHelp() {
 			@keydown="onNavKey"
 		>
 			<div class="flex items-center gap-3">
-				<BrandMark :size="36" />
-				<div class="min-w-0 flex-1">
-					<p class="truncate text-lg font-extrabold italic tracking-tight">Pixel Connect</p>
-				</div>
+				<LogoLockup />
 				<button
 					ref="closeBtn"
 					type="button"
@@ -190,8 +187,7 @@ function onHelp() {
 	<!-- Persistent rail/panel -->
 	<aside class="pc-panel pc-rail flex flex-col px-3 py-5" aria-label="Main navigation">
 		<div class="pc-rail-wide-only items-center gap-3 px-2">
-			<BrandMark :size="36" />
-			<p class="min-w-0 flex-1 truncate text-lg font-extrabold italic tracking-tight">Pixel Connect</p>
+			<LogoLockup />
 		</div>
 		<div class="pc-rail-narrow-only flex-col items-center gap-3">
 			<button
@@ -297,8 +293,11 @@ function onHelp() {
 		<div class="flex flex-col gap-3 text-sm">
 			<p class="text-muted">
 				Pixel Connect links this computer to the phone over the local network
-				(KDE Connect) and over Bluetooth (Quick Share). Both need the devices
-				to reach each other; neither needs an account or the internet.
+				(KDE Connect) and over Bluetooth Low Energy (Quick Share file
+				sharing). Both need the devices to reach each other; neither needs
+				an account or the internet. This is not the KDE Connect Bluetooth
+				transport listed under Devices, which is a different stack and is
+				not implemented.
 			</p>
 			<Disclosure label="Phone isn't found or won't stay connected">
 				<ul class="list-disc space-y-1 pl-5 text-muted">

@@ -32,6 +32,8 @@ const actionLabel = (a: string): string =>
 const busy = ref<string | null>(null)
 /** Draft reply text, keyed by notification id. */
 const replyDraft = reactive<Record<string, string>>({})
+/** Reply boxes stay collapsed until tapped. */
+const showReply = reactive<Record<string, boolean>>({})
 
 /** Honest heading: title, then text, then the app name, never empty. */
 function headingFor(n: RemoteNotification): string {
@@ -161,6 +163,7 @@ async function sendReply(notificationId: string, text: string) {
 		await api.kdeReplyToNotification(notificationId, body)
 		store.toast('Reply sent to the phone', 'success')
 		delete replyDraft[notificationId]
+		delete showReply[notificationId]
 		const n = store.notifications.find((x) => x.id === notificationId)
 		if (n) removeWithUndo(n, 'Reply sent')
 	} catch (e) {
@@ -191,6 +194,12 @@ async function clearAll() {
 	store.notifications = []
 	if (entries.length) showUndo(entries, `${entries.length === 1 ? 'Notification' : 'Notifications'} cleared`)
 	else store.toast('Notifications cleared', 'success')
+}
+
+/** Live link state for a group header dot: the single source of truth is
+ * the device record's linkState, exactly as the sidebar and Files hero read it. */
+function groupOnline(deviceId: string): boolean {
+	return store.devices.some((d) => d.id === deviceId && d.linkState === 'Connected')
 }
 
 function cardIcon(name: string | null | undefined) {
@@ -283,7 +292,14 @@ function cardIcon(name: string | null | undefined) {
 			<!-- phone notifications, grouped by device and app -->
 			<section v-for="group in groups" :key="group.deviceId" aria-label="Phone notifications">
 				<h3 class="pc-grouphead">
-					<span class="pc-status-dot shrink-0 bg-online" aria-hidden="true" />
+					<!-- Driven by the live link, like every other status dot. This was
+						hardcoded green, so a disconnected phone looked connected here
+						while every other screen said otherwise. -->
+					<span
+						class="pc-status-dot shrink-0"
+						:class="groupOnline(group.deviceId) ? 'bg-online' : 'bg-faint'"
+						aria-hidden="true"
+					/>
 					{{ group.deviceName }}
 					<span class="text-faint">· {{ group.apps.reduce((n, [, items]) => n + items.length, 0) }}</span>
 				</h3>
@@ -311,8 +327,11 @@ function cardIcon(name: string | null | undefined) {
 							</div>
 
 							<!-- typed reply: only when the phone marked it repliable -->
+							<div v-if="n.requestReplyId && !showReply[n.id]" class="mt-4 flex flex-wrap gap-2">
+								<button type="button" class="pc-btn pc-btn-secondary pc-btn-sm" @click="showReply[n.id] = true">Reply</button>
+							</div>
 							<form
-								v-if="n.requestReplyId"
+								v-if="n.requestReplyId && showReply[n.id]"
 								class="mt-4 flex gap-2"
 								@submit.prevent="sendReply(n.id, replyDraft[n.id] ?? '')"
 							>

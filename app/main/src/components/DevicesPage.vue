@@ -269,6 +269,27 @@ async function stopScrcpy(serial: string) {
 	store.scrcpySessions = await api.scrcpyRunning()
 }
 
+/** Disconnect a wireless adb device by host:port. USB serials never match and
+ * the backend refuses them, so this cannot drop a wired device. */
+async function disconnectWireless(serial: string) {
+	busy.value = `disconnect:${serial}`
+	try {
+		await api.adbDisconnectWireless(serial)
+		store.adbDevices = await api.adbDevices()
+		store.scrcpySessions = await api.scrcpyRunning()
+		store.toast('Wireless device disconnected', 'success')
+	} catch (e) {
+		store.toast(`Could not disconnect: ${e}`, 'error')
+	} finally {
+		busy.value = null
+	}
+}
+
+/** True when this app has a live scrcpy process for the serial. */
+function scrcpyRunning(serial: string): boolean {
+	return store.scrcpySessions.includes(serial)
+}
+
 const refreshing = ref(false)
 
 async function refreshDevices() {
@@ -604,8 +625,19 @@ const adb = computed(() => store.adbDevices)
 												{{ device.serial }} · adb state: {{ device.state }}
 											</p>
 										</div>
+										<!-- Running session wins: Stop is shown whenever this app
+											holds a live scrcpy process, even if the device also
+											reports ready. A stale session on an offline device
+											never shows Stop — that row gets Disconnect instead. -->
 										<button
-											v-if="device.scrcpyReady"
+											v-if="scrcpyRunning(device.serial) && device.state === 'device'"
+											class="pc-btn pc-btn-secondary pc-btn-sm"
+											@click="stopScrcpy(device.serial)"
+										>
+											Stop scrcpy
+										</button>
+										<button
+											v-else-if="device.scrcpyReady && device.state === 'device'"
 											class="pc-btn pc-btn-primary pc-btn-sm"
 											:disabled="busy === `adb:${device.serial}`"
 											@click="launchScrcpy(device.serial)"
@@ -613,12 +645,16 @@ const adb = computed(() => store.adbDevices)
 											<PcIcon name="monitor" :size="14" />
 											Open in scrcpy
 										</button>
+										<!-- Wireless rows always offer Disconnect (host:port only;
+											the backend refuses USB serials). For offline or
+											unauthorized entries this clears the stale row. -->
 										<button
-											v-else-if="store.scrcpySessions.includes(device.serial)"
-											class="pc-btn pc-btn-secondary pc-btn-sm"
-											@click="stopScrcpy(device.serial)"
+											v-if="device.kind === 'wireless'"
+											class="pc-btn pc-btn-ghost pc-btn-sm"
+											:disabled="busy === `disconnect:${device.serial}`"
+											@click="disconnectWireless(device.serial)"
 										>
-											Stop scrcpy
+											Disconnect
 										</button>
 										<p
 											v-else-if="device.scrcpyBlockReason"

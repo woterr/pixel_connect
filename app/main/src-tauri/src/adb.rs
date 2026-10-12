@@ -449,6 +449,54 @@ pub async fn stop_scrcpy(state: &AdbState, serial: &str) -> Result<bool, String>
     }
 }
 
+/// Disconnect a wireless adb device by its exact `host:port` serial.
+///
+/// Only `host:port` serials are accepted: bare `adb disconnect` with no
+/// argument drops every device, so the serial is validated and USB serials
+/// are refused outright. If this app has a live scrcpy process for the
+/// serial, it is stopped first so mirroring does not keep the entry alive.
+pub async fn disconnect_wireless(state: &AdbState, serial: &str) -> Result<(), String> {
+    if !is_host_port(serial) {
+        return Err(format!(
+            "refusing to disconnect {serial:?}: only host:port wireless serials may be disconnected"
+        ));
+    }
+    // Stop our own mirroring first; a running scrcpy holds the connection.
+    let _ = stop_scrcpy(state, serial).await;
+    let adb = state
+        .tools
+        .lock()
+        .await
+        .adb
+        .clone()
+        .ok_or_else(|| "adb was not found on PATH".to_string())?;
+    let out = tokio::process::Command::new(adb)
+        .args(["disconnect", serial])
+        .output()
+        .await
+        .map_err(|e| format!("could not run adb disconnect: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "adb disconnect failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// True for `host:port` serials only (IPv4/hostname plus numeric port).
+/// USB serials (`R5CT…`, `emulator-5554`) never match.
+fn is_host_port(serial: &str) -> bool {
+    let Some((host, port)) = serial.rsplit_once(':') else {
+        return false;
+    };
+    !host.is_empty()
+        && !host.contains(':')
+        && !port.is_empty()
+        && port.len() <= 5
+        && port.bytes().all(|b| b.is_ascii_digit())
+}
+
 pub async fn running(state: &AdbState) -> Vec<String> {
     let mut list: Vec<String> = state.running.lock().await.keys().cloned().collect();
     list.sort();
