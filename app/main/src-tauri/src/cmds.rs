@@ -134,6 +134,24 @@ pub fn quickshare_stop_discovery(state: Shared<'_>) {
 }
 
 #[tauri::command]
+pub async fn quickshare_send_files(
+    state: Shared<'_>,
+    endpoint_id: String,
+    endpoint_name: String,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let mut resolved = Vec::with_capacity(paths.len());
+    for raw in &paths {
+        let path = std::path::PathBuf::from(raw);
+        if !path.exists() {
+            return Err(format!("{} does not exist", path.display()));
+        }
+        resolved.push(path);
+    }
+    crate::quickshare::send_files(state.inner(), endpoint_id, endpoint_name, resolved).await
+}
+
+#[tauri::command]
 pub async fn quickshare_send_payload(
     state: Shared<'_>,
     payload: pixel_connect_quickshare::SendInfo,

@@ -242,6 +242,32 @@ async function sendText() {
 	}
 }
 
+const sendingQuickShare = ref(false)
+
+/** BLE endpoints have no stable address; the engine re-scans by name. */
+function isBleEndpoint(ep: { id?: string | null; address?: string | null }): boolean {
+	return (ep.id ?? '').startsWith('ble://') || !ep.address
+}
+
+async function sendViaQuickShare(ep: { id?: string | null; name?: string | null; address?: string | null }) {
+	if (!selectedFile.value) return
+	const endpointId = ep.id ?? ep.address ?? ''
+	const endpointName = ep.name ?? ep.address ?? 'Nearby device'
+	if (!endpointId) {
+		store.toast('That target has no usable address yet.', 'error')
+		return
+	}
+	sendingQuickShare.value = true
+	try {
+		await api.quickshareSendFiles(endpointId, endpointName, [selectedFile.value.path])
+		store.toast(`Sharing ${selectedFile.value.name} with ${endpointName}…`, 'info')
+	} catch (e) {
+		store.toast(`Could not share via Quick Share: ${e}`, 'error')
+	} finally {
+		sendingQuickShare.value = false
+	}
+}
+
 async function sendSelected() {
 	if (!selectedFile.value) return
 	const target = store.preferredDevice
@@ -750,6 +776,26 @@ onBeforeUnmount(() => {
 						Send File
 						<PcIcon name="upload" :size="16" />
 					</button>
+					<!-- Quick Share targets discovered by the engine (LAN and BLE).
+						Additive: the KDE send above is untouched. Endpoints carry no
+						link state of their own — selection opens the transport the
+						endpoint was found on, upgrading where the peer allows. -->
+					<div v-if="selectedFile && store.quickshareEndpoints.length" class="mt-3">
+						<p class="pc-eyebrow">Quick Share</p>
+						<div class="mt-2 space-y-2">
+							<button
+								v-for="ep in store.quickshareEndpoints"
+								:key="ep.id ?? ep.address ?? ep.name ?? 'endpoint'"
+								class="pc-btn pc-btn-ghost w-full py-2.5"
+								:disabled="sendingQuickShare"
+								@click="sendViaQuickShare(ep)"
+							>
+								<PcIcon :name="isBleEndpoint(ep) ? 'bluetooth' : 'wifi'" :size="16" />
+								{{ ep.name ?? ep.address ?? 'Nearby device' }}
+								<span class="text-xs text-faint">· {{ isBleEndpoint(ep) ? 'Bluetooth' : 'Wi-Fi' }}</span>
+							</button>
+						</div>
+					</div>
 				</div>
 			</section>
 

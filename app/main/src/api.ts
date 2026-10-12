@@ -55,6 +55,13 @@ export const quickshareStopDiscovery = () =>
 export const quickshareSendPayload = (payload: SendInfo) =>
 	invoke<void>('quickshare_send_payload', { payload })
 
+export const quickshareSendFiles = (endpointId: string, endpointName: string, paths: string[]) =>
+	invoke<void>('quickshare_send_files', {
+		endpointId,
+		endpointName,
+		paths,
+	})
+
 export const quickshareSetVisibility = (visibility: Visibility) =>
 	invoke<void>('quickshare_set_visibility', { visibility })
 

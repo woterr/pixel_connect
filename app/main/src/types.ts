@@ -297,10 +297,15 @@ export interface ChannelMessage {
 }
 
 export interface EndpointInfo {
-	name: string
+	name: string | null
 	device_type: DeviceType
 	address: string | null
 	port: number | null
+	/** Engine endpoint id: "ip:port" for LAN, "ble://name" for BLE targets. */
+	id?: string | null
+	/** Present for BLE-discovered targets; marks the Bluetooth route. */
+	ble_addr?: string | null
+	ble_psm?: number | null
 }
 
 export interface OutboundPayload {

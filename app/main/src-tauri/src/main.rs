@@ -86,6 +86,7 @@ async fn main() -> Result<(), anyhow::Error> {
             cmds::quickshare_start_discovery,
             cmds::quickshare_stop_discovery,
             cmds::quickshare_send_payload,
+            cmds::quickshare_send_files,
             cmds::quickshare_send_to_lib,
             cmds::quickshare_set_visibility,
             cmds::quickshare_set_download_path,

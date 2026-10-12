@@ -247,6 +247,45 @@ pub fn set_download_path(state: &Arc<crate::AppState>, path: Option<PathBuf>) {
     state.quickshare.lock().unwrap().set_download_path(path);
 }
 
+/// Queue files for sending over Quick Share to a discovered endpoint.
+///
+/// `endpoint_id`/`endpoint_name` come from a `quickshare:endpoint` event. BLE
+/// endpoints (`ble://…`) have no stable address — the engine re-scans by name
+/// before dialing — so the flag, not the address, selects the transport.
+/// Directories are refused honestly: the Files payload carries files only.
+pub async fn send_files(
+    state: &Arc<crate::AppState>,
+    endpoint_id: String,
+    endpoint_name: String,
+    paths: Vec<std::path::PathBuf>,
+) -> Result<(), String> {
+    let mut files = Vec::with_capacity(paths.len());
+    for path in &paths {
+        if !path.is_file() {
+            return Err(format!(
+                "Quick Share sends files, not directories: {}",
+                path.display()
+            ));
+        }
+        files.push(path.to_string_lossy().to_string());
+    }
+    if files.is_empty() {
+        return Err("no files were selected".into());
+    }
+    let ble = endpoint_id.starts_with("ble://");
+    send_payload(
+        state,
+        SendInfo {
+            id: endpoint_id.clone(),
+            name: endpoint_name,
+            addr: endpoint_id,
+            ob: pixel_connect_quickshare::OutboundPayload::Files(files),
+            ble,
+        },
+    )
+    .await
+}
+
 pub async fn send_payload(state: &Arc<crate::AppState>, payload: SendInfo) -> Result<(), String> {
     state
         .send_sender
