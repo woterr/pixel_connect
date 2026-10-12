@@ -16,7 +16,10 @@
 			role="img"
 			aria-label="Pixel Connect logo"
 		>
-			<use href="#pc-logo" />
+			<!-- xlink attr is for older WebKit (incl. some WebKitGTK) which
+				ignores plain href; modern browsers use href. One element, so
+				the tile paints exactly once. -->
+			<use href="#pc-logo" xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="#pc-logo" />
 		</svg>
 		<span class="pc-lockup__word">Pixel&nbsp;Connect</span>
 	</span>

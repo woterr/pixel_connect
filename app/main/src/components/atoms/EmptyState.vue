@@ -19,7 +19,7 @@ withDefaults(
 		<span class="m3empty__mark">
 			<slot name="mark">
 				<svg width="64" height="64" viewBox="0 0 108 108" role="img" aria-label="Pixel Connect logo">
-					<use href="#pc-logo" />
+					<use href="#pc-logo" xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="#pc-logo" />
 				</svg>
 			</slot>
 		</span>
