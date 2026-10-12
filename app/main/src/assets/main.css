@@ -1,127 +1,709 @@
-/* Pixel Connect — design system.
+/* Pixel Connect — design tokens + components.
  *
- * Recreated from the supplied Pixel Connect designs:
- *   - AMOLED-black canvas, one warm off-white accent, one green "online" state
- *   - Eyebrow labels in wide-tracked uppercase, section numbers (01, 02, 03)
- *   - Heavy display type for the transfer headline, tight tracking
- *   - Squircle-ish cards at 1.25rem, pill buttons at 2rem
- *   - A signature wavy progress rule that fills left-to-right with the transfer
+ * Single source of truth: `src/tokens.ts`. The token values below are flat
+ * literals (no `var()` chains inside token definitions) so that
+ * `scripts/contrast-check.mjs` can verify every theme x accent combination
+ * from the built CSS. If a value changes in `tokens.ts`, copy it here; the
+ * contrast script fails otherwise.
+ *
+ * Kept working for existing screens: every `.pc-*` selector from the previous
+ * revision still exists with the same meaning. Legacy stored themes
+ * (`dark`, `light`, `midnight`, `contrast-dark`, `contrast-light`) alias to
+ * the nearest new theme, and the old `--pc-*` triplet variables
+ * (`--pc-bg`, `--pc-card`, `--pc-accent`, `--pc-online`, ...) are still
+ * defined on every theme — old `rgb(var(--pc-*))` usages keep resolving.
  */
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ------------------------------------------------------- bundled font --- */
+
+@font-face {
+	font-family: 'Figtree';
+	font-style: normal;
+	font-weight: 400 800;
+	font-display: swap;
+	src: url('./fonts/figtree-latin.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+	font-family: 'Figtree';
+	font-style: normal;
+	font-weight: 400 800;
+	font-display: swap;
+	src: url('./fonts/figtree-latin-ext.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* --------------------------------------- animatable color tokens (@property)
+ *
+ * Registered as `<color>` so a theme or accent switch cross-fades the
+ * surfaces (~300ms, `var(--pc-duration-medium)`) instead of cutting.
+ * Unregistered custom properties flip discretely; these do not.
+ */
+
+@property --pc-primary {
+	syntax: '<color>';
+	inherits: true;
+	initial-value: #a9efc8;
+}
+
+@property --pc-on-primary {
+	syntax: '<color>';
+	inherits: true;
+	initial-value: #0c0c0d;
+}
+
+@property --pc-primary-container {
+	syntax: '<color>';
+	inherits: true;
+	initial-value: #178247;
+}
+
+@property --pc-on-primary-container {
+	syntax: '<color>';
+	inherits: true;
+	initial-value: #ffffff;
+}
+
+@property --pc-secondary-container {
+	syntax: '<color>';
+	inherits: true;
+	initial-value: #136c3b;
+}
+
+@property --pc-on-secondary-container {
+	syntax: '<color>';
+	inherits: true;
+	initial-value: #ffffff;
+}
+
+@property --pc-surface-tint {
+	syntax: '<color>';
+	inherits: true;
+	initial-value: #a9efc8;
+}
+
 @layer base {
 	:root {
 		color-scheme: dark;
-		--pc-bg: 10 10 10;
-		--pc-raised: 20 20 20;
-		--pc-card: 26 26 26;
-		--pc-card-alt: 33 33 33;
-		--pc-line: 42 42 42;
+
+		/* -------------------------------------------------- font --------- */
+		--pc-font-sans: 'Figtree', 'Inter', system-ui, -apple-system, 'Segoe UI',
+			Roboto, sans-serif;
+		--pc-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+		/* ------------------------------------------------- motion --------
+		 * Emphasized for almost everything; decelerate for entrances,
+		 * accelerate for exits. Springs only for toggles/chips, never for
+		 * navigation. Durations are the 100/200/300/500ms scale. */
+		--pc-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+		--pc-ease-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+		--pc-ease-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+		--pc-spring-soft: cubic-bezier(0.34, 1.3, 0.64, 1);
+		--pc-spring-snappy: cubic-bezier(0.3, 1.4, 0.5, 1);
+		--pc-duration-shortest: 100ms;
+		--pc-duration-short: 200ms;
+		--pc-duration-medium: 300ms;
+		--pc-duration-long: 500ms;
+
+		/* --------------------------------------------------- type --------
+		 * Display 36/44, Headline 28/36, Title 20/28 600, Body L 16/24,
+		 * Body M 14/20, Label 12/16 500 +0.04 tracking. */
+		--pc-type-display-size: 2.25rem;
+		--pc-type-display-line: 2.75rem;
+		--pc-type-headline-size: 1.75rem;
+		--pc-type-headline-line: 2.25rem;
+		--pc-type-title-size: 1.25rem;
+		--pc-type-title-line: 1.75rem;
+		--pc-type-body-l-size: 1rem;
+		--pc-type-body-l-line: 1.5rem;
+		--pc-type-body-m-size: 0.875rem;
+		--pc-type-body-m-line: 1.25rem;
+		--pc-type-label-size: 0.75rem;
+		--pc-type-label-line: 1rem;
+
+		/* -------------------------------------------------- shape --------
+		 * Cards 24px, inner tiles and text fields 16px, buttons/chips fully
+		 * rounded. */
+		--pc-radius-card: 1.5rem;
+		--pc-radius-inner: 1rem;
+		--pc-radius-field: 1rem;
+		--pc-radius-pill: 9999px;
+
+		/* ------------------------------------------------- spacing -------
+		 * 4px grid; content never wider than 880px, centred, 32px gutters. */
+		--pc-space: 4px;
+		--pc-content-max: 880px;
+		--pc-content-pad: 32px;
+
+		/* -------------------------------------------- state layers -------
+		 * Opacity of the tint overlay for each interaction state. */
+		--pc-state-hover: 0.08;
+		--pc-state-focus: 0.12;
+		--pc-state-pressed: 0.12;
+		--pc-state-dragged: 0.16;
+
+		/* --------------------------------- default theme: simple-dark ----
+		 * `:root` is the backend default (theme `dark` -> simple-dark,
+		 * accent `green`), so the first frame before bootstrap applies the
+		 * settings is already correct for a default install rather than an
+		 * undefined state. */
+		--pc-bg: 19 19 19;
+		--pc-raised: 27 27 27;
+		--pc-card: 33 33 33;
+		--pc-card-alt: 41 41 41;
+		--pc-line: 46 46 46;
+		--pc-outline: 123 123 123;
 		--pc-text: 244 244 244;
-		--pc-muted: 142 142 142;
-		--pc-faint: 95 95 95;
-		--pc-accent: 244 244 244;
-		--pc-on-accent: 10 10 10;
+		--pc-muted: 176 176 176;
+		--pc-faint: 156 156 156;
 		--pc-online: 61 220 132;
 		--pc-warn: 245 165 36;
 		--pc-danger: 244 84 76;
-		--pc-radius-card: 1.25rem;
-		--pc-radius-pill: 2rem;
+		--pc-surface: 19 19 19;
+		--pc-container-lowest: 19 19 19;
+		--pc-container-low: 27 27 27;
+		--pc-container-medium: 33 33 33;
+		--pc-container-high: 41 41 41;
+		--pc-container-highest: 52 52 52;
+		--pc-primary: #a9efc8;
+		--pc-on-primary: #0c0c0d;
+		--pc-primary-container: #178247;
+		--pc-on-primary-container: #ffffff;
+		--pc-secondary-container: #136c3b;
+		--pc-on-secondary-container: #ffffff;
+		--pc-surface-tint: #a9efc8;
+		--pc-accent: 169 239 200;
+		--pc-on-accent: 12 12 13;
 	}
 
 	/*
-	 * Themes.
+	 * Themes, selected by `data-theme` on <html>.
 	 *
-	 * Selected by `data-theme` on <html>. `:root` above is the dark default, so
-	 * an application that never applies the attribute still renders correctly
-	 * rather than in an undefined state.
+	 * amoled: true-black canvas; cards keep a 1px outline-variant border
+	 *   because elevation steps are nearly invisible on pure black.
+	 * space-dark: deep blue canvas with a 6% accent radial glow at the top
+	 *   (removed under reduced motion, see below).
+	 * simple-dark / simple-light: the everyday pair; `system` follows the OS.
+	 * white-light: pure-white canvas.
 	 *
-	 * `html.light` is kept because it predates `data-theme`. It is the same
-	 * theme as `data-theme="light"`.
-	 *
-	 * Measured contrast of --pc-text against --pc-bg:
-	 *
-	 *     dark 18.0:1   light 17.6:1   midnight 17.7:1
-	 *     contrast-dark 21.0:1         contrast-light 21.0:1
-	 *
-	 * All five clear WCAG AAA (7:1) for body text, so the contrast themes are
-	 * not here to reach a threshold the others miss - an earlier version of this
-	 * comment claimed they were, and was wrong. What they raise is the
-	 * boundaries: --pc-line goes from 42 to 110, and secondary text from 6.0:1 to
-	 * 14.4:1. That matters for low-vision users and poor displays, and the OS
-	 * contrast setting cannot reach a webview.
+	 * Legacy values keep working: dark->simple-dark, light->simple-light,
+	 * midnight->space-dark, contrast-dark->amoled, contrast-light->white-light.
 	 */
 
-	html.light,
-	html[data-theme='light'] {
-		color-scheme: light;
-		--pc-bg: 246 246 246;
-		--pc-raised: 255 255 255;
-		--pc-card: 255 255 255;
-		--pc-card-alt: 240 240 240;
-		--pc-line: 224 224 224;
-		--pc-text: 16 16 16;
-		--pc-muted: 96 96 96;
-		--pc-faint: 150 150 150;
-		--pc-accent: 16 16 16;
-		--pc-on-accent: 255 255 255;
-		--pc-online: 22 145 88;
-		--pc-warn: 176 108 0;
-		--pc-danger: 199 42 34;
-	}
-
-	html[data-theme='midnight'] {
-		color-scheme: dark;
-		--pc-bg: 4 6 14;
-		--pc-raised: 10 14 26;
-		--pc-card: 14 19 34;
-		--pc-card-alt: 20 27 46;
-		--pc-line: 32 42 68;
-		--pc-text: 236 240 250;
-		--pc-muted: 156 166 190;
-		--pc-faint: 108 118 142;
-		--pc-accent: 140 170 255;
-		--pc-on-accent: 4 6 14;
-		--pc-online: 88 214 168;
-		--pc-warn: 245 185 96;
-		--pc-danger: 255 122 114;
-	}
-
+	html[data-theme='amoled'],
 	html[data-theme='contrast-dark'] {
 		color-scheme: dark;
 		--pc-bg: 0 0 0;
 		--pc-raised: 10 10 10;
 		--pc-card: 20 20 20;
 		--pc-card-alt: 32 32 32;
-		--pc-line: 110 110 110;
-		--pc-text: 255 255 255;
-		--pc-muted: 214 214 214;
-		--pc-faint: 176 176 176;
-		--pc-accent: 255 255 255;
-		--pc-on-accent: 0 0 0;
-		--pc-online: 122 255 178;
-		--pc-warn: 255 214 102;
-		--pc-danger: 255 138 128;
+		--pc-line: 42 42 42;
+		--pc-outline: 117 117 117;
+		--pc-text: 244 244 244;
+		--pc-muted: 174 174 174;
+		--pc-faint: 154 154 154;
+		--pc-online: 61 220 132;
+		--pc-warn: 245 165 36;
+		--pc-danger: 244 84 76;
+		--pc-surface: 0 0 0;
+		--pc-container-lowest: 0 0 0;
+		--pc-container-low: 10 10 10;
+		--pc-container-medium: 20 20 20;
+		--pc-container-high: 32 32 32;
+		--pc-container-highest: 43 43 43;
 	}
 
+	html[data-theme='space-dark'],
+	html[data-theme='midnight'] {
+		color-scheme: dark;
+		--pc-bg: 10 12 22;
+		--pc-raised: 16 19 34;
+		--pc-card: 21 26 46;
+		--pc-card-alt: 28 35 64;
+		--pc-line: 42 51 85;
+		--pc-outline: 138 148 184;
+		--pc-text: 236 239 247;
+		--pc-muted: 169 178 204;
+		--pc-faint: 147 155 184;
+		--pc-online: 61 220 132;
+		--pc-warn: 245 165 36;
+		--pc-danger: 244 84 76;
+		--pc-surface: 10 12 22;
+		--pc-container-lowest: 10 12 22;
+		--pc-container-low: 16 19 34;
+		--pc-container-medium: 21 26 46;
+		--pc-container-high: 28 35 64;
+		--pc-container-highest: 36 44 80;
+	}
+
+	html[data-theme='simple-dark'],
+	html[data-theme='dark'] {
+		color-scheme: dark;
+		--pc-bg: 19 19 19;
+		--pc-raised: 27 27 27;
+		--pc-card: 33 33 33;
+		--pc-card-alt: 41 41 41;
+		--pc-line: 46 46 46;
+		--pc-outline: 123 123 123;
+		--pc-text: 244 244 244;
+		--pc-muted: 176 176 176;
+		--pc-faint: 156 156 156;
+		--pc-online: 61 220 132;
+		--pc-warn: 245 165 36;
+		--pc-danger: 244 84 76;
+		--pc-surface: 19 19 19;
+		--pc-container-lowest: 19 19 19;
+		--pc-container-low: 27 27 27;
+		--pc-container-medium: 33 33 33;
+		--pc-container-high: 41 41 41;
+		--pc-container-highest: 52 52 52;
+	}
+
+	html.light,
+	html[data-theme='simple-light'],
+	html[data-theme='light'] {
+		color-scheme: light;
+		--pc-bg: 245 245 243;
+		--pc-raised: 255 255 255;
+		--pc-card: 255 255 255;
+		--pc-card-alt: 236 236 234;
+		--pc-line: 223 223 220;
+		--pc-outline: 111 111 108;
+		--pc-text: 22 22 20;
+		--pc-muted: 74 74 70;
+		--pc-faint: 91 91 87;
+		--pc-online: 19 125 76;
+		--pc-warn: 156 96 0;
+		--pc-danger: 199 42 34;
+		--pc-surface: 245 245 243;
+		--pc-container-lowest: 245 245 243;
+		--pc-container-low: 255 255 255;
+		--pc-container-medium: 255 255 255;
+		--pc-container-high: 236 236 234;
+		--pc-container-highest: 226 226 223;
+		/* With no explicit accent the light themes use the light mapping of
+		 * the default (green) accent; explicit data-accent rules below win
+		 * by specificity. */
+		--pc-primary: #1c9c55;
+		--pc-on-primary: #0c0c0d;
+		--pc-primary-container: #d4f7e4;
+		--pc-on-primary-container: #0c0c0d;
+		--pc-secondary-container: #e9fbf1;
+		--pc-on-secondary-container: #0c0c0d;
+		--pc-surface-tint: #1c9c55;
+		--pc-accent: 28 156 85;
+		--pc-on-accent: 12 12 13;
+	}
+
+	html[data-theme='white-light'],
 	html[data-theme='contrast-light'] {
 		color-scheme: light;
 		--pc-bg: 255 255 255;
 		--pc-raised: 255 255 255;
 		--pc-card: 255 255 255;
-		--pc-card-alt: 242 242 242;
-		--pc-line: 40 40 40;
-		--pc-text: 0 0 0;
-		--pc-muted: 32 32 32;
-		--pc-faint: 58 58 58;
-		--pc-accent: 0 0 0;
-		--pc-on-accent: 255 255 255;
-		--pc-online: 0 92 44;
-		--pc-warn: 116 62 0;
-		--pc-danger: 148 0 0;
+		--pc-card-alt: 241 241 241;
+		--pc-line: 226 226 226;
+		--pc-outline: 112 112 112;
+		--pc-text: 10 10 10;
+		--pc-muted: 69 69 69;
+		--pc-faint: 89 89 89;
+		--pc-online: 19 125 76;
+		--pc-warn: 156 96 0;
+		--pc-danger: 199 42 34;
+		--pc-surface: 255 255 255;
+		--pc-container-lowest: 255 255 255;
+		--pc-container-low: 255 255 255;
+		--pc-container-medium: 255 255 255;
+		--pc-container-high: 241 241 241;
+		--pc-container-highest: 232 232 232;
+		--pc-primary: #1c9c55;
+		--pc-on-primary: #0c0c0d;
+		--pc-primary-container: #d4f7e4;
+		--pc-on-primary-container: #0c0c0d;
+		--pc-secondary-container: #e9fbf1;
+		--pc-on-secondary-container: #0c0c0d;
+		--pc-surface-tint: #1c9c55;
+		--pc-accent: 28 156 85;
+		--pc-on-accent: 12 12 13;
+	}
+
+	/* system: dark mapping by default, light mapping under the OS setting. */
+	html[data-theme='system'] {
+		color-scheme: light dark;
+		--pc-bg: 19 19 19;
+		--pc-raised: 27 27 27;
+		--pc-card: 33 33 33;
+		--pc-card-alt: 41 41 41;
+		--pc-line: 46 46 46;
+		--pc-outline: 123 123 123;
+		--pc-text: 244 244 244;
+		--pc-muted: 176 176 176;
+		--pc-faint: 156 156 156;
+		--pc-online: 61 220 132;
+		--pc-warn: 245 165 36;
+		--pc-danger: 244 84 76;
+		--pc-surface: 19 19 19;
+		--pc-container-lowest: 19 19 19;
+		--pc-container-low: 27 27 27;
+		--pc-container-medium: 33 33 33;
+		--pc-container-high: 41 41 41;
+		--pc-container-highest: 52 52 52;
+	}
+
+	@media (prefers-color-scheme: light) {
+		html[data-theme='system'] {
+			color-scheme: light;
+			--pc-bg: 245 245 243;
+			--pc-raised: 255 255 255;
+			--pc-card: 255 255 255;
+			--pc-card-alt: 236 236 234;
+			--pc-line: 223 223 220;
+			--pc-outline: 111 111 108;
+			--pc-text: 22 22 20;
+			--pc-muted: 74 74 70;
+			--pc-faint: 91 91 87;
+			--pc-online: 19 125 76;
+			--pc-warn: 156 96 0;
+			--pc-danger: 199 42 34;
+			--pc-surface: 245 245 243;
+			--pc-container-lowest: 245 245 243;
+			--pc-container-low: 255 255 255;
+			--pc-container-medium: 255 255 255;
+			--pc-container-high: 236 236 234;
+			--pc-container-highest: 226 226 223;
+			--pc-primary: #1c9c55;
+			--pc-on-primary: #0c0c0d;
+			--pc-primary-container: #d4f7e4;
+			--pc-on-primary-container: #0c0c0d;
+			--pc-secondary-container: #e9fbf1;
+			--pc-on-secondary-container: #0c0c0d;
+			--pc-surface-tint: #1c9c55;
+			--pc-accent: 28 156 85;
+			--pc-on-accent: 12 12 13;
+		}
+	}
+
+	/*
+	 * prefers-contrast:more on the system theme raises the outlines and the
+	 * secondary text — the same thing the old contrast-dark/contrast-light
+	 * themes did, now following the OS instead of a stored value. The
+	 * contrast script checks the base values (which already pass AA); this
+	 * block only goes further for users who ask for it.
+	 */
+	@media (prefers-contrast: more) {
+		html[data-theme='system'] {
+			--pc-line: 140 140 140;
+			--pc-outline: 200 200 200;
+			--pc-muted: 214 214 214;
+			--pc-faint: 200 200 200;
+		}
+	}
+
+	@media (prefers-color-scheme: light) and (prefers-contrast: more) {
+		html[data-theme='system'] {
+			--pc-line: 90 90 87;
+			--pc-outline: 70 70 67;
+			--pc-muted: 51 51 48;
+			--pc-faint: 62 62 59;
+		}
+	}
+
+html[data-accent='purple'] {
+	--pc-primary: #B199FF;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #240099;
+	--pc-on-primary-container: #FFFFFF;
+	--pc-secondary-container: #1E0080;
+	--pc-on-secondary-container: #FFFFFF;
+	--pc-surface-tint: #B199FF;
+	--pc-accent: 177 153 255;
+	--pc-on-accent: 12 12 13;
+}
+html[data-accent='blue'] {
+	--pc-primary: #9EC1FA;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #073C92;
+	--pc-on-primary-container: #FFFFFF;
+	--pc-secondary-container: #063279;
+	--pc-on-secondary-container: #FFFFFF;
+	--pc-surface-tint: #9EC1FA;
+	--pc-accent: 158 193 250;
+	--pc-on-accent: 12 12 13;
+}
+html[data-accent='pink'] {
+	--pc-primary: #F6A2C6;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #8C0D44;
+	--pc-on-primary-container: #FFFFFF;
+	--pc-secondary-container: #740B38;
+	--pc-on-secondary-container: #FFFFFF;
+	--pc-surface-tint: #F6A2C6;
+	--pc-accent: 246 162 198;
+	--pc-on-accent: 12 12 13;
+}
+html[data-accent='green'] {
+	--pc-primary: #A9EFC8;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #178247;
+	--pc-on-primary-container: #FFFFFF;
+	--pc-secondary-container: #136C3B;
+	--pc-on-secondary-container: #FFFFFF;
+	--pc-surface-tint: #A9EFC8;
+	--pc-accent: 169 239 200;
+	--pc-on-accent: 12 12 13;
+}
+html[data-accent='yellow'] {
+	--pc-primary: #FCE09C;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #946B05;
+	--pc-on-primary-container: #FFFFFF;
+	--pc-secondary-container: #7C5904;
+	--pc-on-secondary-container: #FFFFFF;
+	--pc-surface-tint: #FCE09C;
+	--pc-accent: 252 224 156;
+	--pc-on-accent: 12 12 13;
+}
+html[data-accent='brown'] {
+	--pc-primary: #D8C6C0;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #5F443A;
+	--pc-on-primary-container: #FFFFFF;
+	--pc-secondary-container: #4F3931;
+	--pc-on-secondary-container: #FFFFFF;
+	--pc-surface-tint: #D8C6C0;
+	--pc-accent: 216 198 192;
+	--pc-on-accent: 12 12 13;
+}
+html[data-accent='gray'] {
+	--pc-primary: #C9CCCF;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #484C51;
+	--pc-on-primary-container: #FFFFFF;
+	--pc-secondary-container: #3C4044;
+	--pc-on-secondary-container: #FFFFFF;
+	--pc-surface-tint: #C9CCCF;
+	--pc-accent: 201 204 207;
+	--pc-on-accent: 12 12 13;
+}
+html[data-accent='white'] {
+	--pc-primary: #FFFFFF;
+	--pc-on-primary: #0B0B0C;
+	--pc-primary-container: #484C51;
+	--pc-on-primary-container: #FFFFFF;
+	--pc-secondary-container: #3C4044;
+	--pc-on-secondary-container: #FFFFFF;
+	--pc-surface-tint: #FFFFFF;
+	--pc-accent: 255 255 255;
+	--pc-on-accent: 11 11 12;
+}
+
+html[data-theme='simple-light'][data-accent='purple'],
+html[data-theme='light'][data-accent='purple'],
+html[data-theme='white-light'][data-accent='purple'],
+html[data-theme='contrast-light'][data-accent='purple'] {
+	--pc-primary: #3000CC;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #D8CCFF;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #EBE5FF;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #3000CC;
+	--pc-accent: 48 0 204;
+	--pc-on-accent: 255 255 255;
+}
+html[data-theme='simple-light'][data-accent='blue'],
+html[data-theme='light'][data-accent='blue'],
+html[data-theme='white-light'][data-accent='blue'],
+html[data-theme='contrast-light'][data-accent='blue'] {
+	--pc-primary: #0A50C2;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #CEE0FD;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #E7F0FE;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #0A50C2;
+	--pc-accent: 10 80 194;
+	--pc-on-accent: 255 255 255;
+}
+html[data-theme='simple-light'][data-accent='pink'],
+html[data-theme='light'][data-accent='pink'],
+html[data-theme='white-light'][data-accent='pink'],
+html[data-theme='contrast-light'][data-accent='pink'] {
+	--pc-primary: #BA125A;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #FBD0E3;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #FDE8F1;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #BA125A;
+	--pc-accent: 186 18 90;
+	--pc-on-accent: 255 255 255;
+}
+html[data-theme='simple-light'][data-accent='green'],
+html[data-theme='light'][data-accent='green'],
+html[data-theme='white-light'][data-accent='green'],
+html[data-theme='contrast-light'][data-accent='green'] {
+	--pc-primary: #1C9C55;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #D4F7E4;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #E9FBF1;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #1C9C55;
+	--pc-accent: 28 156 85;
+	--pc-on-accent: 12 12 13;
+}
+html[data-theme='simple-light'][data-accent='yellow'],
+html[data-theme='light'][data-accent='yellow'],
+html[data-theme='white-light'][data-accent='yellow'],
+html[data-theme='contrast-light'][data-accent='yellow'] {
+	--pc-primary: #B28106;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #FDF0CE;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #FEF7E6;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #B28106;
+	--pc-accent: 178 129 6;
+	--pc-on-accent: 12 12 13;
+}
+html[data-theme='simple-light'][data-accent='brown'],
+html[data-theme='light'][data-accent='brown'],
+html[data-theme='white-light'][data-accent='brown'],
+html[data-theme='contrast-light'][data-accent='brown'] {
+	--pc-primary: #7E5B4E;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #ECE3DF;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #F5F1EF;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #7E5B4E;
+	--pc-accent: 126 91 78;
+	--pc-on-accent: 255 255 255;
+}
+html[data-theme='simple-light'][data-accent='gray'],
+html[data-theme='light'][data-accent='gray'],
+html[data-theme='white-light'][data-accent='gray'],
+html[data-theme='contrast-light'][data-accent='gray'] {
+	--pc-primary: #60666C;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #E4E6E7;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #F1F2F3;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #60666C;
+	--pc-accent: 96 102 108;
+	--pc-on-accent: 255 255 255;
+}
+html[data-theme='simple-light'][data-accent='white'],
+html[data-theme='light'][data-accent='white'],
+html[data-theme='white-light'][data-accent='white'],
+html[data-theme='contrast-light'][data-accent='white'] {
+	--pc-primary: #17171A;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #E4E6E7;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #F1F2F3;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #17171A;
+	--pc-accent: 23 23 26;
+	--pc-on-accent: 255 255 255;
+}
+
+@media (prefers-color-scheme: light) {
+		html[data-theme='system'][data-accent='purple'] {
+	--pc-primary: #3000CC;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #D8CCFF;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #EBE5FF;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #3000CC;
+	--pc-accent: 48 0 204;
+	--pc-on-accent: 255 255 255;
+}
+		html[data-theme='system'][data-accent='blue'] {
+	--pc-primary: #0A50C2;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #CEE0FD;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #E7F0FE;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #0A50C2;
+	--pc-accent: 10 80 194;
+	--pc-on-accent: 255 255 255;
+}
+		html[data-theme='system'][data-accent='pink'] {
+	--pc-primary: #BA125A;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #FBD0E3;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #FDE8F1;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #BA125A;
+	--pc-accent: 186 18 90;
+	--pc-on-accent: 255 255 255;
+}
+		html[data-theme='system'][data-accent='green'] {
+	--pc-primary: #1C9C55;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #D4F7E4;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #E9FBF1;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #1C9C55;
+	--pc-accent: 28 156 85;
+	--pc-on-accent: 12 12 13;
+}
+		html[data-theme='system'][data-accent='yellow'] {
+	--pc-primary: #B28106;
+	--pc-on-primary: #0C0C0D;
+	--pc-primary-container: #FDF0CE;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #FEF7E6;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #B28106;
+	--pc-accent: 178 129 6;
+	--pc-on-accent: 12 12 13;
+}
+		html[data-theme='system'][data-accent='brown'] {
+	--pc-primary: #7E5B4E;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #ECE3DF;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #F5F1EF;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #7E5B4E;
+	--pc-accent: 126 91 78;
+	--pc-on-accent: 255 255 255;
+}
+		html[data-theme='system'][data-accent='gray'] {
+	--pc-primary: #60666C;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #E4E6E7;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #F1F2F3;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #60666C;
+	--pc-accent: 96 102 108;
+	--pc-on-accent: 255 255 255;
+}
+		html[data-theme='system'][data-accent='white'] {
+	--pc-primary: #17171A;
+	--pc-on-primary: #FFFFFF;
+	--pc-primary-container: #E4E6E7;
+	--pc-on-primary-container: #0C0C0D;
+	--pc-secondary-container: #F1F2F3;
+	--pc-on-secondary-container: #0C0C0D;
+	--pc-surface-tint: #17171A;
+	--pc-accent: 23 23 26;
+	--pc-on-accent: 255 255 255;
+}
 	}
 
 	html,
@@ -134,9 +716,15 @@
 	body {
 		background-color: rgb(var(--pc-bg));
 		color: rgb(var(--pc-text));
-		font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+		font-family: var(--pc-font-sans);
+		font-size: var(--pc-type-body-l-size);
+		line-height: var(--pc-type-body-l-line);
 		-webkit-font-smoothing: antialiased;
 		overflow: hidden;
+		/* Theme switches cross-fade through the registered @property tokens. */
+		transition:
+			background-color var(--pc-duration-medium) var(--pc-ease-emphasized),
+			color var(--pc-duration-medium) var(--pc-ease-emphasized);
 	}
 
 	/* Visible keyboard focus everywhere, matching GNOME expectations. */
@@ -150,19 +738,74 @@
 		background: rgb(var(--pc-text));
 		color: rgb(var(--pc-bg));
 	}
+
+	/*
+	 * View Transitions: same-document navigations cross-fade in 250ms.
+	 * Circular reveals are opt-in per navigation from script:
+	 *
+	 *   document.startViewTransition(() => { ...route change... })
+	 *
+	 * with `.pc-view-reveal` on the incoming view for the expanding-circle
+	 * variant; without it the cross-fade below is the fallback.
+	 */
+	@view-transition {
+		navigation: auto;
+	}
+
+	::view-transition-old(root),
+	::view-transition-new(root) {
+		animation-duration: 250ms;
+		animation-timing-function: var(--pc-ease-emphasized);
+	}
 }
 
 @layer components {
-	/* ---------------------------------------------------------- typography */
+	/* ---------------------------------------------------------- typography
+	 * Scale: Display 36/44, Headline 28/36, Title 20/28 600, Body L 16/24,
+	 * Body M 14/20, Label 12/16 500 +tracking. Body copy is never set below
+	 * 14px and supporting text never below 13px (see tailwind fontSize floor
+	 * for text-xs); the Label role at 12px is reserved for short uppercase
+	 * micro-labels, always at >= 4.5:1. */
 
 	.pc-display {
+		font-size: var(--pc-type-display-size);
+		line-height: var(--pc-type-display-line);
 		font-weight: 800;
-		letter-spacing: -0.035em;
-		line-height: 0.95;
+		letter-spacing: -0.02em;
+	}
+
+	.pc-headline {
+		font-size: var(--pc-type-headline-size);
+		line-height: var(--pc-type-headline-line);
+		font-weight: 700;
+		letter-spacing: -0.01em;
+	}
+
+	.pc-title {
+		font-size: var(--pc-type-title-size);
+		line-height: var(--pc-type-title-line);
+		font-weight: 600;
+	}
+
+	.pc-body-l {
+		font-size: var(--pc-type-body-l-size);
+		line-height: var(--pc-type-body-l-line);
+	}
+
+	.pc-body-m {
+		font-size: var(--pc-type-body-m-size);
+		line-height: var(--pc-type-body-m-line);
+	}
+
+	.pc-label {
+		font-size: var(--pc-type-label-size);
+		line-height: var(--pc-type-label-line);
+		font-weight: 500;
+		letter-spacing: 0.04em;
 	}
 
 	.pc-eyebrow {
-		font-size: 0.6875rem;
+		font-size: 0.75rem;
 		font-weight: 600;
 		letter-spacing: 0.18em;
 		text-transform: uppercase;
@@ -183,14 +826,38 @@
 		letter-spacing: -0.02em;
 	}
 
-	/* ------------------------------------------------------------ surfaces */
+	/* ------------------------------------------------------------ layout */
+
+	/*
+	 * Content column: never wider than 880px, centred, 32px side gutters.
+	 * Screens adopt it when they migrate; it is not applied anywhere yet so
+	 * no existing layout shifts.
+	 */
+	.pc-content {
+		width: 100%;
+		max-width: var(--pc-content-max);
+		margin-inline: auto;
+		padding-inline: var(--pc-content-pad);
+	}
+
+	/* ------------------------------------------------------------ surfaces
+	 * Elevation comes from the surface-container tone steps; only AMOLED
+	 * adds a 1px outline-variant border, where the steps alone would vanish
+	 * on true black. */
 
 	.pc-card {
 		background-color: rgb(var(--pc-card));
 		color: rgb(var(--pc-text));
 		border-radius: var(--pc-radius-card);
-		transition: background-color 160ms cubic-bezier(0.2, 0, 0, 1),
-			transform 160ms cubic-bezier(0.2, 0, 0, 1);
+		transition:
+			background-color var(--pc-duration-short) var(--pc-ease-emphasized),
+			color var(--pc-duration-short) var(--pc-ease-emphasized),
+			transform var(--pc-duration-short) var(--pc-ease-emphasized);
+	}
+
+	html[data-theme='amoled'] .pc-card,
+	html[data-theme='contrast-dark'] .pc-card {
+		border: 1px solid rgb(var(--pc-line));
 	}
 
 	.pc-card-interactive:hover {
@@ -203,7 +870,18 @@
 
 	.pc-inset {
 		background-color: rgb(var(--pc-card-alt));
-		border-radius: var(--pc-radius-card);
+		border-radius: var(--pc-radius-inner);
+	}
+
+	/* Text fields: 16px radius, outline follows the meaningful border token. */
+	.pc-field {
+		background-color: rgb(var(--pc-card-alt));
+		border-radius: var(--pc-radius-field);
+	}
+
+	.pc-field:focus-within {
+		outline: 2px solid rgb(var(--pc-text));
+		outline-offset: 1px;
 	}
 
 	.pc-divider {
@@ -219,8 +897,10 @@
 		gap: 0.5rem;
 		font-weight: 600;
 		border-radius: var(--pc-radius-pill);
-		transition: background-color 140ms cubic-bezier(0.2, 0, 0, 1),
-			color 140ms cubic-bezier(0.2, 0, 0, 1), opacity 140ms ease;
+		transition:
+			background-color var(--pc-duration-short) var(--pc-ease-emphasized),
+			color var(--pc-duration-short) var(--pc-ease-emphasized),
+			opacity var(--pc-duration-short) var(--pc-ease-emphasized);
 		white-space: nowrap;
 	}
 
@@ -283,8 +963,9 @@
 		font-size: 0.9375rem;
 		font-weight: 500;
 		color: rgb(var(--pc-muted));
-		transition: background-color 140ms cubic-bezier(0.2, 0, 0, 1),
-			color 140ms cubic-bezier(0.2, 0, 0, 1);
+		transition:
+			background-color var(--pc-duration-short) var(--pc-ease-emphasized),
+			color var(--pc-duration-short) var(--pc-ease-emphasized);
 	}
 
 	.pc-nav-item:hover {
@@ -318,7 +999,7 @@
 		stroke-width: 2.5;
 		fill: none;
 		stroke-linecap: round;
-		transition: stroke-dashoffset 400ms cubic-bezier(0.2, 0, 0, 1);
+		transition: stroke-dashoffset var(--pc-duration-medium) var(--pc-ease-emphasized);
 	}
 
 	/* ------------------------------------------------------------- switch */
@@ -331,7 +1012,7 @@
 		height: 1.5rem;
 		border-radius: 9999px;
 		background-color: rgb(var(--pc-card-alt));
-		transition: background-color 160ms cubic-bezier(0.2, 0, 0, 1);
+		transition: background-color var(--pc-duration-short) var(--pc-ease-emphasized);
 		flex: none;
 	}
 
@@ -346,8 +1027,9 @@
 		height: 1.125rem;
 		border-radius: 9999px;
 		background-color: rgb(var(--pc-muted));
-		transition: transform 180ms cubic-bezier(0.2, 0, 0, 1),
-			background-color 180ms cubic-bezier(0.2, 0, 0, 1);
+		transition:
+			transform var(--pc-duration-short) var(--pc-ease-emphasized),
+			background-color var(--pc-duration-short) var(--pc-ease-emphasized);
 	}
 
 	.pc-switch[aria-checked='true'] .pc-switch__thumb {
@@ -371,7 +1053,7 @@
 		padding: 0.125rem 0.625rem;
 		border-radius: 9999px;
 		border: 1px solid rgb(var(--pc-line));
-		font-size: 0.6875rem;
+		font-size: 0.75rem;
 		font-weight: 600;
 		letter-spacing: 0.06em;
 		color: rgb(var(--pc-muted));
@@ -380,9 +1062,11 @@
 	/* ------------------------------------------------------------ dropzone */
 
 	.pc-dropzone {
-		border: 2px dashed rgb(var(--pc-line));
+		border: 2px dashed rgb(var(--pc-outline));
 		border-radius: var(--pc-radius-card);
-		transition: border-color 160ms ease, background-color 160ms ease;
+		transition:
+			border-color var(--pc-duration-short) var(--pc-ease-emphasized),
+			background-color var(--pc-duration-short) var(--pc-ease-emphasized);
 	}
 
 	.pc-dropzone[data-active='true'] {
@@ -434,6 +1118,10 @@
 	/*
 	 * Connection state. Every pill carries a word as well as a colour, so
 	 * state is never conveyed by colour alone.
+	 *
+	 * The honest transport states stay exactly as the backend reports them:
+	 * `available`/`unverified`/`unavailable` render as Available/Unverified/
+	 * "Not implemented" — no state is renamed or hidden here.
 	 */
 	.pc-pill {
 		display: inline-flex;
@@ -443,7 +1131,7 @@
 		border-radius: 9999px;
 		border: 1px solid rgb(var(--pc-line));
 		background-color: rgb(var(--pc-card-alt));
-		font-size: 0.6875rem;
+		font-size: 0.75rem;
 		font-weight: 600;
 		letter-spacing: 0.02em;
 		white-space: nowrap;
@@ -475,8 +1163,9 @@
 		background-color: rgb(var(--pc-card));
 		border: 1px solid rgb(var(--pc-line));
 		border-radius: var(--pc-radius-card);
-		transition: border-color 140ms cubic-bezier(0.2, 0, 0, 1),
-			background-color 140ms cubic-bezier(0.2, 0, 0, 1);
+		transition:
+			border-color var(--pc-duration-short) var(--pc-ease-emphasized),
+			background-color var(--pc-duration-short) var(--pc-ease-emphasized);
 	}
 
 	.pc-row[data-active='true'] {
@@ -517,7 +1206,9 @@
 		font-size: 0.8125rem;
 		text-align: left;
 		color: rgb(var(--pc-muted));
-		transition: background-color 120ms ease, color 120ms ease;
+		transition:
+			background-color var(--pc-duration-shortest) ease,
+			color var(--pc-duration-shortest) ease;
 	}
 
 	.pc-menu__item:hover:not(:disabled) {
@@ -602,19 +1293,19 @@
 		justify-content: center;
 		border-radius: 9999px;
 		background-color: rgb(var(--pc-card-alt));
-		font-size: 0.6875rem;
+		font-size: 0.75rem;
 		font-weight: 700;
 		color: rgb(var(--pc-muted));
 		font-variant-numeric: tabular-nums;
 	}
 
-	/* Inline code in help copy. */
+	/* Inline code in help copy. Never set below 13px. */
 	.pc-code {
 		padding: 0.0625rem 0.375rem;
 		border-radius: 0.375rem;
 		background-color: rgb(var(--pc-card-alt));
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: 0.8125em;
+		font-family: var(--pc-font-mono);
+		font-size: max(0.8125em, 13px);
 	}
 
 	.pc-pre {
@@ -623,27 +1314,11 @@
 		border-radius: 0.75rem;
 		background-color: rgb(var(--pc-bg));
 		border: 1px solid rgb(var(--pc-line));
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: 0.75rem;
+		font-family: var(--pc-font-mono);
+		font-size: 0.8125rem;
 		line-height: 1.6;
 		overflow-x: auto;
 	}
-
-	/* Theme-aware text utilities. Tailwind's ink/paper palette is hardcoded
-	 * and bypasses data-theme entirely, so these replace text-muted,
-	 * text-faint, text-online, text-warn, text-danger usages. */
-	.text-muted { color: rgb(var(--pc-muted)); }
-	.text-faint { color: rgb(var(--pc-faint)); }
-	.text-online { color: rgb(var(--pc-online)); }
-	.text-warn { color: rgb(var(--pc-warn)); }
-	.text-danger { color: rgb(var(--pc-danger)); }
-	.text-ink { color: rgb(var(--pc-text)); }
-	.bg-ink { background-color: rgb(var(--pc-bg)); }
-	.border-ink-line { border-color: rgb(var(--pc-line)); }
-	.bg-ink-card-alt { background-color: rgb(var(--pc-card-alt)); }
-	.bg-ink-line { background-color: rgb(var(--pc-line)); }
-	.border-l-paper { border-left-color: rgb(var(--pc-text)); }
-	.border-paper { border-color: rgb(var(--pc-text)); }
 
 	/* ------------------------------------------------------------ scrollbar */
 
@@ -665,6 +1340,96 @@
 	}
 }
 
+/*
+ * space-dark accent glow: a 6% surface-tint radial at the top of the canvas.
+ * `color-mix` keeps the tint a true hex token; engines without it drop the
+ * declaration and the theme is simply flat. Hidden under reduced motion.
+ */
+@layer base {
+	html[data-theme='space-dark'] body::before,
+	html[data-theme='midnight'] body::before {
+		content: '';
+		position: fixed;
+		inset: 0 0 auto 0;
+		height: 44vh;
+		pointer-events: none;
+		background: radial-gradient(
+			60% 100% at 50% 0%,
+			color-mix(in srgb, var(--pc-surface-tint) 6%, transparent),
+			transparent 70%
+		);
+	}
+}
+
+/*
+ * Compatibility utilities for pre-migration class names.
+ *
+ * Tailwind's own `ink`/`paper`/`online`/`warn`/`danger` utilities are now
+ * generated from the same CSS variables (see tailwind.config.cjs), but these
+ * names either have no Tailwind equivalent (`bg-faint`, `bg-inset`,
+ * `placeholder:text-faint`) or need a different variable than the palette
+ * position implies (`text-ink` is the text colour while `bg-ink` is the
+ * canvas). They live in the utilities layer *after* the `@tailwind
+ * utilities` directive, so on the names where both exist these win.
+ */
+@layer utilities {
+	.text-muted {
+		color: rgb(var(--pc-muted));
+	}
+	.text-faint {
+		color: rgb(var(--pc-faint));
+	}
+	.text-online {
+		color: rgb(var(--pc-online));
+	}
+	.text-warn {
+		color: rgb(var(--pc-warn));
+	}
+	.text-danger {
+		color: rgb(var(--pc-danger));
+	}
+	.text-ink {
+		color: rgb(var(--pc-text));
+	}
+	.bg-ink {
+		background-color: rgb(var(--pc-bg));
+	}
+	.bg-faint {
+		background-color: rgb(var(--pc-faint));
+	}
+	.bg-online {
+		background-color: rgb(var(--pc-online));
+	}
+	.bg-inset {
+		background-color: rgb(var(--pc-card-alt));
+	}
+	.border-ink-line {
+		border-color: rgb(var(--pc-line));
+	}
+	.bg-ink-card-alt {
+		background-color: rgb(var(--pc-card-alt));
+	}
+	.bg-ink-line {
+		background-color: rgb(var(--pc-line));
+	}
+	.border-l-paper {
+		border-left-color: rgb(var(--pc-text));
+	}
+	.border-paper {
+		border-color: rgb(var(--pc-text));
+	}
+	.placeholder\:text-faint::placeholder {
+		color: rgb(var(--pc-faint));
+		opacity: 1;
+	}
+}
+
+/*
+ * Reduced motion, two paths: the OS setting and the stored
+ * `data-reduce-motion` attribute (settings `reduceMotion`, applied by
+ * `stores/app.ts applyTheme`). Fades cap at 100ms; translation, springs,
+ * the space-dark glow and view-transition animation are removed entirely.
+ */
 @media (prefers-reduced-motion: reduce) {
 	*,
 	*::before,
@@ -672,4 +1437,25 @@
 		animation-duration: 0.001ms !important;
 		transition-duration: 0.001ms !important;
 	}
+
+	html[data-theme='space-dark'] body::before,
+	html[data-theme='midnight'] body::before {
+		display: none;
+	}
+
+	::view-transition-old(root),
+	::view-transition-new(root) {
+		animation-duration: 0.001ms !important;
+	}
+}
+
+html[data-reduce-motion] *,
+html[data-reduce-motion] *::before,
+html[data-reduce-motion] *::after {
+	animation-duration: 0.001ms !important;
+	transition-duration: 0.001ms !important;
+}
+
+html[data-reduce-motion] body::before {
+	display: none;
 }

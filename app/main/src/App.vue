@@ -12,6 +12,7 @@ import FilesPage from './components/FilesPage.vue'
 import NotificationsPage from './components/NotificationsPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import SideMenu, { type ViewName } from './components/SideMenu.vue'
+import BrandMark from './components/atoms/BrandMark.vue'
 import PcIcon from './components/atoms/PcIcon.vue'
 import ToastMessage from './components/atoms/ToastMessage.vue'
 import { useAppStore } from './stores/app'
@@ -25,7 +26,10 @@ let unlisteners: Array<() => void> = []
 
 async function boot() {
 	await store.bootstrap()
-
+	// Apply the stored accent and motion choices alongside the theme. The
+	// store's applyTheme covers data-theme; these two live with it so the
+	// whole appearance lands before anything renders.
+	applyAppearance()
 	const sub = async (p: Promise<() => void>) => {
 		const fn = await p
 		unlisteners.push(fn)
@@ -117,6 +121,28 @@ async function boot() {
 	}
 }
 
+/**
+ * Mirror the stored accent / reduce-motion choices onto the document, next to
+ * what `store.applyTheme` does for the theme. Unknown accents fall back to
+ * the default rather than being applied blind, matching the backend's
+ * validation. Each write is cached for the pre-paint contract in tokens.ts.
+ */
+function applyAppearance() {
+	if (typeof document === 'undefined') return
+	const accent = store.settings?.accent
+	if (accent) document.documentElement.setAttribute('data-accent', accent)
+	const reduce = store.settings?.reduceMotion === true
+	if (reduce) document.documentElement.setAttribute('data-reduce-motion', '')
+	else document.documentElement.removeAttribute('data-reduce-motion')
+	try {
+		if (store.settings?.theme) localStorage.setItem('pc-theme', store.settings.theme)
+		if (accent) localStorage.setItem('pc-accent', accent)
+		localStorage.setItem('pc-reduce-motion', reduce ? '1' : '0')
+	} catch {
+		/* private mode: styling still applies for this session */
+	}
+}
+
 /** Forward locally-observed clipboard text to the paired phone. */
 async function pushClipboard(text: string) {
 	if (!store.settings?.clipboardAutoShare) return
@@ -156,6 +182,47 @@ function navigate(next: ViewName) {
 	drawerOpen.value = false
 }
 
+// ---- window controls ------------------------------------------------------
+//
+// The OS frame stays in charge (decorations are native): these buttons invoke
+// the same Tauri window the frame buttons drive, so Close still honours the
+// backend's realclose setting (hide-to-tray vs quit) and nothing about window
+// behaviour changes. Outside Tauri the cluster hides itself.
+
+interface WindowControls {
+	minimize: () => void
+	toggleMaximize: () => void
+	close: () => void
+	isMaximized: () => Promise<boolean>
+}
+
+const windowControls = ref<WindowControls | null>(null)
+const maximized = ref(false)
+
+async function refreshMaximized() {
+	try {
+		if (windowControls.value) maximized.value = await windowControls.value.isMaximized()
+	} catch {
+		/* best-effort chrome state */
+	}
+}
+
+onMounted(async () => {
+	try {
+		const { getCurrentWindow } = await import('@tauri-apps/api/window')
+		const w = getCurrentWindow()
+		windowControls.value = {
+			minimize: () => void w.minimize().catch(() => undefined),
+			toggleMaximize: () => void w.toggleMaximize().catch(() => undefined).finally(() => void refreshMaximized()),
+			close: () => void w.close().catch(() => undefined),
+			isMaximized: () => w.isMaximized(),
+		}
+		await refreshMaximized()
+	} catch {
+		windowControls.value = null
+	}
+})
+
 onMounted(boot)
 
 // Ask the backend to dial everything it has already discovered, once, as soon
@@ -175,41 +242,79 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-	<div class="flex h-full w-full overflow-hidden bg-ink text-ink">
-		<SideMenu :view="view" :open="drawerOpen" @navigate="navigate" @close="drawerOpen = false" />
-
-		<div class="relative flex min-w-0 flex-1 flex-col">
-			<!-- compact top bar for narrow layouts -->
-			<header
-				class="flex items-center justify-between border-b border-ink-line px-5 py-3 lg:hidden"
+	<div class="flex h-full w-full flex-col overflow-hidden bg-ink text-ink">
+		<!-- Title bar: mark + title + the window cluster driving the real window. -->
+		<header
+			class="pc-titlebar flex h-12 shrink-0 items-center gap-3 border-b border-ink-line px-4"
+			data-tauri-drag-region
+		>
+			<BrandMark :size="24" />
+			<p class="min-w-0 flex-1 truncate text-sm font-bold italic tracking-tight">
+				Pixel Connect
+			</p>
+			<div
+				v-if="windowControls"
+				class="flex shrink-0 items-center gap-1"
+				role="group"
+				aria-label="Window"
 			>
 				<button
 					type="button"
-					class="pc-btn pc-btn-ghost h-10 w-10 p-0"
-					aria-label="Open navigation"
-					@click="drawerOpen = true"
+					class="pc-winbtn"
+					aria-label="Minimize"
+					title="Minimize"
+					@click="windowControls.minimize()"
 				>
-					<PcIcon name="menu" />
+					<span aria-hidden="true" class="pc-winbtn__glyph">–</span>
 				</button>
-				<h1 class="text-lg font-extrabold italic tracking-tight">Pixel Connect</h1>
 				<button
 					type="button"
-					class="pc-btn pc-btn-ghost h-10 w-10 p-0"
-					aria-label="Notifications"
-					@click="navigate('notifications')"
+					class="pc-winbtn"
+					:aria-label="maximized ? 'Restore' : 'Maximize'"
+					:title="maximized ? 'Restore' : 'Maximize'"
+					@click="windowControls.toggleMaximize()"
 				>
-					<PcIcon name="bell" :size="18" />
+					<span aria-hidden="true" class="pc-winbtn__glyph">{{ maximized ? '❐' : '▢' }}</span>
 				</button>
-			</header>
+				<button
+					type="button"
+					class="pc-winbtn pc-winbtn--close"
+					aria-label="Close"
+					title="Close"
+					@click="windowControls.close()"
+				>
+					<PcIcon name="close" :size="14" />
+				</button>
+			</div>
+		</header>
 
-			<FilesPage v-if="view === 'files'" :view="view" @navigate="navigate" />
-			<DevicesPage v-else-if="view === 'devices'" />
-			<NotificationsPage v-else-if="view === 'notifications'" />
-			<SettingsPage v-else />
+		<div class="flex min-h-0 w-full flex-1">
+			<SideMenu
+				:view="view"
+				:open="drawerOpen"
+				@navigate="navigate"
+				@close="drawerOpen = false"
+				@open-drawer="drawerOpen = true"
+			/>
+
+			<!-- Shared-axis-Y fade-through between pages: 28px over 300ms. -->
+			<main class="relative flex min-w-0 flex-1 flex-col" aria-live="off">
+				<Transition name="pc-page" mode="out-in">
+					<FilesPage
+						v-if="view === 'files'"
+						:key="'files'"
+						:view="view"
+						@navigate="navigate"
+					/>
+					<DevicesPage v-else-if="view === 'devices'" :key="'devices'" />
+					<NotificationsPage v-else-if="view === 'notifications'" :key="'notifications'" />
+					<SettingsPage v-else :key="'settings'" />
+				</Transition>
+			</main>
 		</div>
 
 		<!-- toasts -->
-		<div class="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 flex-col gap-2">
+		<div class="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
 			<TransitionGroup
 				enter-active-class="transition duration-200 ease-emphasized"
 				enter-from-class="opacity-0 translate-y-2"
@@ -228,3 +333,61 @@ onBeforeUnmount(() => {
 		</div>
 	</div>
 </template>
+
+<style scoped>
+.pc-titlebar {
+	background-color: rgb(var(--pc-raised));
+	-webkit-user-select: none;
+	user-select: none;
+}
+.pc-winbtn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 2.5rem;
+	height: 2rem;
+	border-radius: 0.5rem;
+	color: rgb(var(--pc-muted));
+	transition:
+		background-color var(--pc-duration-shortest) ease,
+		color var(--pc-duration-shortest) ease;
+	-webkit-app-region: no-drag;
+}
+.pc-winbtn:hover {
+	background-color: rgb(var(--pc-card-alt));
+	color: rgb(var(--pc-text));
+}
+.pc-winbtn--close:hover {
+	background-color: rgb(var(--pc-danger));
+	color: #ffffff;
+}
+.pc-winbtn__glyph {
+	font-size: 1rem;
+	line-height: 1;
+	font-weight: 600;
+}
+.pc-winbtn:focus-visible {
+	outline: 2px solid var(--pc-primary);
+	outline-offset: 1px;
+}
+
+/* Shared-axis-Y fade-through: rise 28px and fade in over 300ms emphasized. */
+.pc-page-enter-active {
+	transition:
+		opacity var(--pc-duration-medium) var(--pc-ease-emphasized),
+		transform var(--pc-duration-medium) var(--pc-ease-emphasized);
+}
+.pc-page-leave-active {
+	transition:
+		opacity 200ms var(--pc-ease-accelerate),
+		transform 200ms var(--pc-ease-accelerate);
+}
+.pc-page-enter-from {
+	opacity: 0;
+	transform: translateY(28px);
+}
+.pc-page-leave-to {
+	opacity: 0;
+	transform: translateY(-24px);
+}
+</style>

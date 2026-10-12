@@ -6,6 +6,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
     <title>Pixel Connect</title>
+    <!-- Pre-paint: apply saved theme/accent/reduce-motion before first paint
+      so the window never flashes the wrong theme on launch. Mirrors
+      stores/app.ts applyTheme + App.vue applyAppearance; localStorage is a
+      cache only, the backend store is authoritative once booted. -->
+    <script>
+      try {
+        var t = localStorage.getItem('pc-theme');
+        var a = localStorage.getItem('pc-accent');
+        var r = localStorage.getItem('pc-reduce-motion');
+        if (t) document.documentElement.setAttribute('data-theme', t);
+        if (a) document.documentElement.setAttribute('data-accent', a);
+        if (r === '1') document.documentElement.setAttribute('data-reduce-motion', '');
+      } catch (e) { /* storage unavailable: boot applies the backend values */ }
+    </script>
   </head>
   <body>
     <div id="app"></div>

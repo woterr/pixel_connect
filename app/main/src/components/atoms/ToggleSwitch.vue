@@ -1,8 +1,16 @@
+<template>
+	<!-- Pixel Connect — legacy toggle alias. Re-exported from Switch.vue so
+		existing imports keep working with identical props/events. -->
+	<Switch
+		:model-value="modelValue"
+		:label="label"
+		:disabled="disabled"
+		@update:model-value="$emit('update:modelValue', $event)"
+	/>
+</template>
+
 <script setup lang="ts">
-// Pixel Connect — toggle switch.
-//
-// A pill-shaped switch with an animated thumb, matching the settings screens in
-// the supplied designs.
+import Switch from './Switch.vue'
 
 defineProps<{
 	modelValue: boolean
@@ -10,19 +18,5 @@ defineProps<{
 	disabled?: boolean
 }>()
 
-const emit = defineEmits<{ 'update:modelValue': [boolean] }>()
+defineEmits<{ 'update:modelValue': [boolean] }>()
 </script>
-
-<template>
-	<button
-		type="button"
-		role="switch"
-		class="pc-switch"
-		:aria-checked="modelValue"
-		:aria-label="label"
-		:disabled="disabled"
-		@click="emit('update:modelValue', !modelValue)"
-	>
-		<span class="pc-switch__thumb" />
-	</button>
-</template>

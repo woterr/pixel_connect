@@ -9,6 +9,7 @@
     "build": "tauri build",
     "vite:dev": "vite dev",
     "vite:build": "vite build",
+    "contrast": "node ../../scripts/contrast-check.mjs",
     "test": "vitest run",
     "ts-check": "vue-tsc --noEmit",
     "preview": "vite preview",

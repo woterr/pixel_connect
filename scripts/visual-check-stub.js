@@ -32,6 +32,8 @@ globalThis.__TAURI_INTERNALS__ = {
 					// selected on load, which looked like a bug in the picker but
 					// was the harness disagreeing with the real API.
 					theme: 'dark',
+					accent: 'green',
+					reduceMotion: false,
 					visibility: 0,
 					port: null,
 					downloadPath: '/home/user/Downloads',
@@ -150,13 +152,14 @@ globalThis.__TAURI_INTERNALS__ = {
 			case 'kde_notifications':
 				return [
 					{
-						key: "a'.repeat(32)",
+						id: 'a'.repeat(32) + ':notif1',
 						title: 'Architecture_Specs.pdf',
 						text: 'Downloaded to ~/Downloads',
 						appName: 'Files',
 						timestamp: now - 120,
 						actions: [],
 						isClearable: true,
+						silent: false,
 					},
 				]
 			case 'filemanager_status':
