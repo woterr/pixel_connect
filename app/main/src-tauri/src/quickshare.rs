@@ -117,6 +117,21 @@ pub fn spawn_forwarders(app: AppHandle) {
                         if msg.state
                             == Some(pixel_connect_quickshare::State::WaitingForUserConsent)
                         {
+                            // Auto-accept when the user asked for it. The KDE
+                            // share path already honours auto_accept_shares, but
+                            // Quick Share had no equivalent, so the switch did
+                            // nothing for incoming Quick Share files. Send the
+                            // accept straight back through the same channel the
+                            // notification action uses.
+                            if crate::settings::get_bool(&app, "auto_accept_shares") {
+                                log::info!(
+                                    "auto-accepting Quick Share transfer {} from user setting",
+                                    msg.id
+                                );
+                                let _ = sender.send(crate::quickshare::accept_transfer(
+                                    msg.id.clone(),
+                                ));
+                            }
                             let name = msg
                                 .meta
                                 .as_ref()

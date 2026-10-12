@@ -91,7 +91,12 @@ async function boot() {
 	if (store.clipboardCaps && !store.clipboardCaps.backgroundReadAllowed) {
 		let lastSeen = ''
 		const syncNow = async () => {
-			if (document.hasFocus()) return
+			// Only a focused window may read the clipboard on this compositor,
+			// so skip when unfocused rather than when focused. The previous
+			// code had this inverted (`if (document.hasFocus()) return`),
+			// which meant the frontend never synced exactly when it was the
+			// only path that could work.
+			if (!document.hasFocus()) return
 			try {
 				const text = await api.clipboardRead()
 				if (!text || text === lastSeen) return
@@ -116,10 +121,31 @@ async function boot() {
 async function pushClipboard(text: string) {
 	if (!store.settings?.clipboardAutoShare) return
 	const target = store.preferredDevice
-	if (!target || target.linkState !== 'Connected') return
+	if (!target) return
+	// Do not silently drop when the link is down: the backend watcher dials
+	// via wake_trusted_devices before sending, but this frontend path sent
+	// directly and returned early on anything but Connected, so a copy made
+	// while the phone was idle was lost. Refresh first (which dials
+	// discovered peers), then attempt the send and let the backend error
+	// surface instead of dropping silently.
+	if (target.linkState !== 'Connected') {
+		try {
+			await api.kdeRefresh()
+			await store.refreshAll()
+		} catch {
+			/* refresh is best-effort; the send below reports the outcome */
+		}
+	}
 	try {
-		await api.kdeShareText(target.id, text)
-		store.toast(`Clipboard sent to ${target.name}`, 'success')
+		// Re-resolve after refresh: the device list may have changed.
+		const fresh =
+			store.devices.find((d) => d.id === target.id) ?? store.preferredDevice
+		if (!fresh) {
+			store.toast('No paired Pixel is available. Pair one under Devices first.', 'error')
+			return
+		}
+		await api.kdeShareText(fresh.id, text)
+		store.toast(`Clipboard sent to ${fresh.name}`, 'success')
 	} catch (e) {
 		store.toast(`Could not send the clipboard: ${e}`, 'error')
 	}

@@ -372,6 +372,14 @@ async fn main() -> Result<(), anyhow::Error> {
                     let Some(state) = handle.try_state::<Arc<KdcState>>() else {
                         return;
                     };
+                    // Respect the user's switches: the watcher previously sent
+                    // regardless of clipboardEnabled / auto_share, so turning
+                    // sync off did nothing. Check before doing any work.
+                    if !crate::settings::get_bool(&handle, "clipboard_enabled")
+                        || !crate::settings::get_bool(&handle, "clipboard_auto_share")
+                    {
+                        return;
+                    }
                     let content = clipboard::read_text().unwrap_or(text);
 
                     // Retry briefly when nobody was reachable.
