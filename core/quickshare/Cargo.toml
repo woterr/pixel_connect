@@ -1,14 +1,15 @@
 # Pixel Connect — Google Quick Share protocol core
 #
-# This crate is a derivative work of `rqs_lib` from the rquickshare project:
-#   https://github.com/Martichou/rquickshare  (Copyright (c) Martin ANDRE,
-#   licensed under the GNU Affero General Public License v3.0)
+# This crate is a derivative work of `rqs_lib` from the open-quickshare
+# project at commit 5a31145 (Copyright (c) Martin ANDRE and contributors,
+# licensed under the GNU General Public License v3.0 or later), which
+# incorporates the rquickshare-ble BLE work.
 #
-# The Google Quick Share / Nearby Connections wire protocol implementation
-# (mDNS service, BLE advertisement, UKEY2/PAKE handshake, secure message
-# framing, payload transfer) is reused unchanged in behaviour. Only the crate
-# name, the public service struct name and log/environment identifiers were
-# changed. See ../../NOTICE.md and ../../docs/architecture/repo-audit.md.
+# The engine (mDNS service, BLE advertisement, GATT + LE L2CAP transports,
+# UKEY2/PAKE handshake, secure message framing, payload transfer, bandwidth
+# upgrades) is reused. Adapted: crate/service/log identifiers, the UI-facing
+# channel protocol in src/ui_channel.rs, and a saved_paths metadata field.
+# See ../../NOTICE.md and ../../docs/architecture/quickshare-migration.md.
 
 [package]
 name = "pixel_connect_quickshare"

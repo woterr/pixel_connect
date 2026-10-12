@@ -8,19 +8,23 @@ See licenses/AGPL-3.0.txt for the full text.
 Third-party works
 --------------------------------------------------------------------------------
 
-## 1. rquickshare (Google Quick Share / Nearby Connections)
+## 1. open-quickshare (Google Quick Share / Nearby Connections)
 
-    https://github.com/Martichou/rquickshare
-    Copyright (C) Martin ANDRE and the rquickshare contributors
-    Licensed under the GNU Affero General Public License v3.0
+    https://github.com/ignotusbucius/open-quickshare @ 5a31145 (2026-09-01)
+    Copyright (C) Martin ANDRE and contributors (full history preserved
+    upstream, including the rquickshare-ble BLE work it incorporates)
+    Licensed under the GNU General Public License v3.0 or later
 
-`core/quickshare/` is a derivative work of rquickshare's `core_lib` crate
-(renamed to `pixel_connect_quickshare`). The following are reused:
+`core/quickshare/` is a derivative work of open-quickshare's `core_lib`
+crate (renamed to `pixel_connect_quickshare`). The following are reused:
 
   * the Google Quick Share / Nearby Connections wire protocol:
     mDNS service advertisement, BLE advertising, the UKEY2 / PAKE handshake,
     secure-message framing and the payload transfer format
-  * the protobuf definitions under `src/proto_src/` (verbatim)
+  * the BLE transport set: GATT receiver, LE L2CAP fast-connect (CoC server
+    and dial), BLE discovery, bandwidth-upgrade negotiation (LAN / Wi-Fi
+    Direct / hotspot), transport fallback and channel switching
+  * the protobuf definitions under `src/proto_src/`
   * the build script that compiles them
   * the TypeScript bindings under `bindings/`
 
@@ -31,9 +35,16 @@ The following were changed:
   * the log environment variable is `PIXEL_CONNECT_LOG` instead of `RQS_LOG`
   * the npm package is `@pixelconnect/quickshare` instead of
     `@martichou/core_lib`
+  * the UI-facing channel protocol (`src/ui_channel.rs`) translates the
+    engine's messages into the shapes the Pixel Connect frontend already
+    speaks; a `saved_paths` field was added to the transfer metadata so the
+    UI can offer received files
 
-No protocol behaviour was modified. Pixel Connect needs rquickshare's licence
-and attribution to remain intact, which is why Pixel Connect is AGPL-3.0.
+Previously this section described the older rquickshare engine
+(Martichou/rquickshare, AGPL-3.0), which open-quickshare supersedes; the
+rquickshare history is preserved inside open-quickshare itself. Combining
+GPL-3.0-or-later code here is permitted (AGPL-3.0 section 13); the project
+license is unchanged.
 
 The original licence text is preserved in licenses/AGPL-3.0.txt.
 
