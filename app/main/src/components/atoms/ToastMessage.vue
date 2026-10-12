@@ -26,7 +26,7 @@ const emit = defineEmits<{ dismiss: [number] }>()
 		<p class="flex-1 leading-snug">{{ message }}</p>
 		<button
 			type="button"
-			class="text-faint transition-colors hover:text-ink dark:hover:text-paper"
+			class="text-faint transition-colors hover:text-ink"
 			aria-label="Dismiss"
 			@click="emit('dismiss', id)"
 		>

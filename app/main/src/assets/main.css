@@ -42,11 +42,17 @@
 	 * `html.light` is kept because it predates `data-theme`. It is the same
 	 * theme as `data-theme="light"`.
 	 *
-	 * The two contrast themes are accessibility options, not decoration. Their
-	 * body text clears WCAG AAA (7:1) against their background, where the
-	 * default themes are close to AA (about 15:1 dark, 17:1 light). They are
-	 * provided because a low-vision user has no other way to increase contrast
-	 * here, and the OS setting cannot reach a webview.
+	 * Measured contrast of --pc-text against --pc-bg:
+	 *
+	 *     dark 18.0:1   light 17.6:1   midnight 17.7:1
+	 *     contrast-dark 21.0:1         contrast-light 21.0:1
+	 *
+	 * All five clear WCAG AAA (7:1) for body text, so the contrast themes are
+	 * not here to reach a threshold the others miss - an earlier version of this
+	 * comment claimed they were, and was wrong. What they raise is the
+	 * boundaries: --pc-line goes from 42 to 110, and secondary text from 6.0:1 to
+	 * 14.4:1. That matters for low-vision users and poor displays, and the OS
+	 * contrast setting cannot reach a webview.
 	 */
 
 	html.light,
@@ -181,6 +187,7 @@
 
 	.pc-card {
 		background-color: rgb(var(--pc-card));
+		color: rgb(var(--pc-text));
 		border-radius: var(--pc-radius-card);
 		transition: background-color 160ms cubic-bezier(0.2, 0, 0, 1),
 			transform 160ms cubic-bezier(0.2, 0, 0, 1);
@@ -621,6 +628,22 @@
 		line-height: 1.6;
 		overflow-x: auto;
 	}
+
+	/* Theme-aware text utilities. Tailwind's ink/paper palette is hardcoded
+	 * and bypasses data-theme entirely, so these replace text-muted,
+	 * text-faint, text-online, text-warn, text-danger usages. */
+	.text-muted { color: rgb(var(--pc-muted)); }
+	.text-faint { color: rgb(var(--pc-faint)); }
+	.text-online { color: rgb(var(--pc-online)); }
+	.text-warn { color: rgb(var(--pc-warn)); }
+	.text-danger { color: rgb(var(--pc-danger)); }
+	.text-ink { color: rgb(var(--pc-text)); }
+	.bg-ink { background-color: rgb(var(--pc-bg)); }
+	.border-ink-line { border-color: rgb(var(--pc-line)); }
+	.bg-ink-card-alt { background-color: rgb(var(--pc-card-alt)); }
+	.bg-ink-line { background-color: rgb(var(--pc-line)); }
+	.border-l-paper { border-left-color: rgb(var(--pc-text)); }
+	.border-paper { border-color: rgb(var(--pc-text)); }
 
 	/* ------------------------------------------------------------ scrollbar */
 

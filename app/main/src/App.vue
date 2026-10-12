@@ -149,7 +149,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-	<div class="flex h-full w-full overflow-hidden bg-ink text-ink dark:bg-ink dark:text-paper">
+	<div class="flex h-full w-full overflow-hidden bg-ink text-ink">
 		<SideMenu :view="view" :open="drawerOpen" @navigate="navigate" @close="drawerOpen = false" />
 
 		<div class="relative flex min-w-0 flex-1 flex-col">

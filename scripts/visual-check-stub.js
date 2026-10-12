@@ -27,6 +27,11 @@ globalThis.__TAURI_INTERNALS__ = {
 					realclose: false,
 					startminimized: false,
 					autostart: false,
+					// The stub must mirror what the backend actually returns.
+					// Omitting this made the theme picker render with nothing
+					// selected on load, which looked like a bug in the picker but
+					// was the harness disagreeing with the real API.
+					theme: 'dark',
 					visibility: 0,
 					port: null,
 					downloadPath: '/home/user/Downloads',

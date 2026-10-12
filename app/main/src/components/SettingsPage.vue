@@ -89,6 +89,18 @@ const THEMES = [
 	}
 ] as const
 
+/**
+ * The theme currently in effect.
+ *
+ * Falls back to 'dark' when the stored value is missing or is not one this
+ * build knows. Without this the picker renders with nothing selected at all,
+ * which reads as a broken control rather than as "using the default".
+ */
+const currentTheme = computed(() => {
+	const t = settings.value?.theme
+	return THEMES.some((o) => o.id === t) ? (t as string) : 'dark'
+})
+
 type MutableSetting =
 	| 'realclose'
 	| 'startminimized'
@@ -203,7 +215,7 @@ onMounted(load)
 			<button
 				v-for="s in sections"
 				:key="s.id"
-				class="pc-chip transition-colors hover:text-paper"
+				class="pc-chip transition-colors hover:text-ink"
 				@click="scrollTo(s.id)"
 			>
 				<span class="pc-numeral">{{ s.numeral }}</span>
@@ -509,8 +521,8 @@ onMounted(load)
 						<div class="min-w-0 flex-1">
 							<p class="font-semibold">Appearance</p>
 							<p class="text-sm text-muted">
-								The two contrast themes are for readability, not decoration: their body
-								text clears WCAG AAA against the background.
+								The two contrast themes raise the borders and secondary text as well as
+								the body, which is what makes them easier to read on a poor display.
 							</p>
 						</div>
 					</div>
@@ -525,10 +537,10 @@ onMounted(load)
 							:key="option.id"
 							type="button"
 							role="radio"
-							:aria-checked="settings.theme === option.id"
+							:aria-checked="currentTheme === option.id"
 							class="pc-card flex items-center gap-3 px-4 py-3 text-left transition"
 							:class="
-								settings.theme === option.id
+								currentTheme === option.id
 									? 'ring-2 ring-[rgb(var(--pc-text))]'
 									: 'hover:bg-[rgb(var(--pc-card-alt))]'
 							"

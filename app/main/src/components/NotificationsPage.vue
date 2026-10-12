@@ -105,7 +105,7 @@ function cardIcon(name: string | null | undefined) {
 			<!-- active transfer -->
 			<article
 				v-if="active"
-				class="pc-card mt-10 border-l-4 border-l-paper p-6 dark:border-l-paper"
+				class="pc-card mt-10 border-l-4 border-l-paper p-6"
 			>
 				<div class="flex items-center gap-4">
 					<div class="pc-inset flex h-11 w-11 items-center justify-center rounded-full">
