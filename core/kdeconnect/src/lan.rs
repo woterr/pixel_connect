@@ -771,13 +771,23 @@ impl LinkContext {
     /// from paired state.
     pub(crate) async fn republish_link_state(&self, peer_id: &str) {
         let connected = self.links.lock().await.contains_key(peer_id);
-        // Rare (only on failed handshakes/dials) and load-bearing: without it
-        // there is no way to tell a real disconnect from a refused duplicate.
-        info!(
-            "republishing {peer_id} as {}",
-            if connected { "Connected" } else { "Disconnected" }
-        );
+        let want = if connected {
+            LinkState::Connected
+        } else {
+            LinkState::Disconnected
+        };
         let mut devices = self.devices.write().await;
+        // Log only when the verdict changes anything: a refused replacement
+        // arrives every few seconds while the phone re-dials, and logging
+        // every one buried the real link lifecycle lines.
+        if let Some(d) = devices.get(peer_id) {
+            if d.link_state != want {
+                info!(
+                    "republishing {peer_id} as {}",
+                    if connected { "Connected" } else { "Disconnected" }
+                );
+            }
+        }
         if let Some(d) = devices.get_mut(peer_id) {
             d.link_state = if connected {
                 LinkState::Connected
