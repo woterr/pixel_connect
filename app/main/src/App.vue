@@ -182,47 +182,6 @@ function navigate(next: ViewName) {
 	drawerOpen.value = false
 }
 
-// ---- window controls ------------------------------------------------------
-//
-// The OS frame stays in charge (decorations are native): these buttons invoke
-// the same Tauri window the frame buttons drive, so Close still honours the
-// backend's realclose setting (hide-to-tray vs quit) and nothing about window
-// behaviour changes. Outside Tauri the cluster hides itself.
-
-interface WindowControls {
-	minimize: () => void
-	toggleMaximize: () => void
-	close: () => void
-	isMaximized: () => Promise<boolean>
-}
-
-const windowControls = ref<WindowControls | null>(null)
-const maximized = ref(false)
-
-async function refreshMaximized() {
-	try {
-		if (windowControls.value) maximized.value = await windowControls.value.isMaximized()
-	} catch {
-		/* best-effort chrome state */
-	}
-}
-
-onMounted(async () => {
-	try {
-		const { getCurrentWindow } = await import('@tauri-apps/api/window')
-		const w = getCurrentWindow()
-		windowControls.value = {
-			minimize: () => void w.minimize().catch(() => undefined),
-			toggleMaximize: () => void w.toggleMaximize().catch(() => undefined).finally(() => void refreshMaximized()),
-			close: () => void w.close().catch(() => undefined),
-			isMaximized: () => w.isMaximized(),
-		}
-		await refreshMaximized()
-	} catch {
-		windowControls.value = null
-	}
-})
-
 onMounted(boot)
 
 // Ask the backend to dial everything it has already discovered, once, as soon
@@ -243,50 +202,7 @@ onBeforeUnmount(() => {
 
 <template>
 	<div class="flex h-full w-full flex-col overflow-hidden bg-ink text-ink">
-		<!-- Title bar: mark + title + the window cluster driving the real window. -->
-		<header
-			class="pc-titlebar flex h-12 shrink-0 items-center gap-3 border-b border-ink-line px-4"
-			data-tauri-drag-region
-		>
-			<BrandMark :size="24" />
-			<p class="min-w-0 flex-1 truncate text-sm font-bold italic tracking-tight">
-				Pixel Connect
-			</p>
-			<div
-				v-if="windowControls"
-				class="flex shrink-0 items-center gap-1"
-				role="group"
-				aria-label="Window"
-			>
-				<button
-					type="button"
-					class="pc-winbtn"
-					aria-label="Minimize"
-					title="Minimize"
-					@click="windowControls.minimize()"
-				>
-					<span aria-hidden="true" class="pc-winbtn__glyph">–</span>
-				</button>
-				<button
-					type="button"
-					class="pc-winbtn"
-					:aria-label="maximized ? 'Restore' : 'Maximize'"
-					:title="maximized ? 'Restore' : 'Maximize'"
-					@click="windowControls.toggleMaximize()"
-				>
-					<span aria-hidden="true" class="pc-winbtn__glyph">{{ maximized ? '❐' : '▢' }}</span>
-				</button>
-				<button
-					type="button"
-					class="pc-winbtn pc-winbtn--close"
-					aria-label="Close"
-					title="Close"
-					@click="windowControls.close()"
-				>
-					<PcIcon name="close" :size="14" />
-				</button>
-			</div>
-		</header>
+
 
 		<div class="flex min-h-0 w-full flex-1">
 			<SideMenu
@@ -335,42 +251,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.pc-titlebar {
-	background-color: rgb(var(--pc-raised));
-	-webkit-user-select: none;
-	user-select: none;
-}
-.pc-winbtn {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	width: 2.5rem;
-	height: 2rem;
-	border-radius: 0.5rem;
-	color: rgb(var(--pc-muted));
-	transition:
-		background-color var(--pc-duration-shortest) ease,
-		color var(--pc-duration-shortest) ease;
-	-webkit-app-region: no-drag;
-}
-.pc-winbtn:hover {
-	background-color: rgb(var(--pc-card-alt));
-	color: rgb(var(--pc-text));
-}
-.pc-winbtn--close:hover {
-	background-color: rgb(var(--pc-danger));
-	color: #ffffff;
-}
-.pc-winbtn__glyph {
-	font-size: 1rem;
-	line-height: 1;
-	font-weight: 600;
-}
-.pc-winbtn:focus-visible {
-	outline: 2px solid var(--pc-primary);
-	outline-offset: 1px;
-}
-
 /* Shared-axis-Y fade-through: rise 28px and fade in over 300ms emphasized. */
 .pc-page-enter-active {
 	transition:

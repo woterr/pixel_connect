@@ -11,6 +11,8 @@
 import { computed, nextTick, ref, watch } from 'vue'
 
 import BrandMark from './atoms/BrandMark.vue'
+import Dialog from './atoms/Dialog.vue'
+import Disclosure from './atoms/Disclosure.vue'
 import PcIcon from './atoms/PcIcon.vue'
 import { useAppStore } from '../stores/app'
 import { quitApp } from '../api'
@@ -80,8 +82,10 @@ watch(
 	},
 )
 
+const helpOpen = ref(false)
+
 function onHelp() {
-	store.toast('Documentation lives in docs/ inside the Pixel Connect project.', 'info')
+	helpOpen.value = true
 }
 </script>
 
@@ -286,6 +290,47 @@ function onHelp() {
 			</button>
 		</div>
 	</aside>
+
+	<!-- Help & troubleshooting. All troubleshooting guidance lives here so a
+		stuck user has one place to look instead of hunting across screens. -->
+	<Dialog :open="helpOpen" title="Help & troubleshooting" @close="helpOpen = false" @update:open="helpOpen = $event">
+		<div class="flex flex-col gap-3 text-sm">
+			<p class="text-muted">
+				Pixel Connect links this computer to the phone over the local network
+				(KDE Connect) and over Bluetooth (Quick Share). Both need the devices
+				to reach each other; neither needs an account or the internet.
+			</p>
+			<Disclosure label="Phone isn't found or won't stay connected">
+				<ul class="list-disc space-y-1 pl-5 text-muted">
+					<li>Put the phone on the same Wi-Fi network as this computer.</li>
+					<li>KDE Connect on the phone runs as a background service — the app does not need to be open, but the service must be enabled.</li>
+					<li>Press Reconnect on the Files screen, then look under Devices for a Pair button and confirm the code on both sides.</li>
+					<li>If the phone claims it is connected but this app shows nothing, the phone is talking to something else (e.g. a previous install): unpair it on the phone and pair again here.</li>
+					<li>Some routers isolate Wi-Fi clients from each other; a phone hotspot or a different access point is worth trying.</li>
+				</ul>
+			</Disclosure>
+			<Disclosure label="Clipboard sync doesn't arrive">
+				<ul class="list-disc space-y-1 pl-5 text-muted">
+					<li>Clipboard sync needs a live link. Copying while the phone is idle first wakes it, which takes a few seconds — copy again if the first attempt misses.</li>
+					<li>Check Settings → Preferences: both clipboard switches must be on.</li>
+					<li>On some Wayland compositors the window must be focused to read the clipboard; the setting screen says what this session supports.</li>
+				</ul>
+			</Disclosure>
+			<Disclosure label="Quick Share sticks at Connecting">
+				<ul class="list-disc space-y-1 pl-5 text-muted">
+					<li>On a shared network the phone uses Wi-Fi and transfers are quick. Over Bluetooth alone, discovery can take up to a minute and large files are slow (about 6&nbsp;KB/s) — small files and text are fine.</li>
+					<li>If the accept prompt never appears, the offer expired: send again.</li>
+					<li>With Auto-accept incoming shares on, offers are accepted immediately.</li>
+				</ul>
+			</Disclosure>
+			<Disclosure label="Where to look when something fails">
+				<ul class="list-disc space-y-1 pl-5 text-muted">
+					<li>Notifications carry failure reasons; transfers can be retried from there.</li>
+					<li>Settings → About shows versions and paths. Logs go to the journal when run as a service.</li>
+				</ul>
+			</Disclosure>
+		</div>
+	</Dialog>
 </template>
 
 <style scoped>

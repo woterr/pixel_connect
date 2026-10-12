@@ -533,7 +533,8 @@ onBeforeUnmount(() => {
 						<p class="mt-2 max-w-md text-sm text-muted">
 							<template v-if="heroDevice">
 								{{ heroName }} is paired but cannot be reached right now. It needs to be on
-								the same network with its KDE Connect app open.
+								the same network — the KDE Connect service on the phone runs in the
+								background, so the app does not need to be open.
 							</template>
 							<template v-else>
 								No phone has been paired yet. Pair one under Devices to start sharing.
@@ -562,7 +563,7 @@ onBeforeUnmount(() => {
 							<p class="pc-eyebrow">Before anything else</p>
 							<ol class="mt-3 space-y-2 text-sm text-muted">
 								<li class="flex gap-2"><span class="font-bold text-ink">1.</span> Put the phone on the same Wi-Fi network as this computer.</li>
-								<li class="flex gap-2"><span class="font-bold text-ink">2.</span> Open the KDE Connect app on the phone — being switched on is not enough for it to appear.</li>
+								<li class="flex gap-2"><span class="font-bold text-ink">2.</span> Make sure KDE Connect is enabled on the phone (its background service advertises on its own — the app does not need to be open).</li>
 								<li class="flex gap-2"><span class="font-bold text-ink">3.</span> Press Reconnect above, then look under Devices for a Pair button.</li>
 							</ol>
 							<div class="mt-4 flex flex-wrap gap-2">

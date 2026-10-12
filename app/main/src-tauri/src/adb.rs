@@ -107,12 +107,18 @@ fn which(bin: &str) -> Option<String> {
 pub async fn detect(state: &AdbState) -> ToolAvailability {
     let adb = which("adb");
     let scrcpy = which("scrcpy");
+    // Short versions only. `adb version` prints four lines (bridge version,
+    // package version, install path, kernel) and `scrcpy --version` prints its
+    // homepage URL plus every compiled/linked dependency (SDL, libav*, libusb).
+    // That detail is useless in the UI - it overflowed the tool chips - so only
+    // the number is kept ("1.0.41", "4.1"). The full output is still available
+    // by running the commands in a terminal.
     let adb_version = match &adb {
-        Some(bin) => run_capture(bin, &["version"]).await,
+        Some(bin) => short_version(&run_capture(bin, &["version"]).await),
         None => None,
     };
     let scrcpy_version = match &scrcpy {
-        Some(bin) => run_capture(bin, &["--version"]).await,
+        Some(bin) => short_version(&run_capture(bin, &["--version"]).await),
         None => None,
     };
     let error = if adb.is_none() && scrcpy.is_none() {
@@ -166,6 +172,73 @@ async fn run_capture(bin: &str, args: &[&str]) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" · "),
     )
+}
+
+/// Keep only the version number from a multi-line `--version` dump.
+///
+/// Returns the first `major.minor[.patch]` found on the first line, so
+/// "Android Debug Bridge version 1.0.41" becomes "1.0.41" and the scrcpy
+/// dependency list never reaches the UI. `None` when the output has no
+/// parseable version, in which case the caller reports "not found" rather
+/// than showing a blob.
+fn short_version(full: &Option<String>) -> Option<String> {
+    let first = full.as_deref()?.lines().next()?.trim();
+    let mut start = None;
+    let mut end = None;
+    for (i, c) in first.char_indices() {
+        if c.is_ascii_digit() {
+            if start.is_none() {
+                start = Some(i);
+            }
+            end = Some(i + c.len_utf8());
+        } else if c == '.' {
+            if start.is_none() {
+                continue;
+            }
+            end = Some(i + 1);
+        } else if start.is_some() {
+            break;
+        }
+    }
+    let (s, e) = (start?, end?);
+    let v = first[s..e].trim_matches('.').to_string();
+    (!v.is_empty()).then_some(v)
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::short_version;
+
+    fn full(s: &str) -> Option<String> {
+        Some(s.to_string())
+    }
+
+    #[test]
+    fn adb_version_is_shortened_to_the_number() {
+        assert_eq!(
+            short_version(&full(
+                "Android Debug Bridge version 1.0.41\nVersion 37.0.0-android-tools\nInstalled as /usr/bin/adb\nRunning on Linux 7.2.8"
+            )),
+            Some("1.0.41".to_string())
+        );
+    }
+
+    #[test]
+    fn scrcpy_version_is_shortened_to_the_number() {
+        assert_eq!(
+            short_version(&full(
+                "scrcpy 4.1 <https://github.com/Genymobile/scrcpy>\nDependencies (compiled / linked):\n - SDL: 3.4.12 / 3.4.16"
+            )),
+            Some("4.1".to_string())
+        );
+    }
+
+    #[test]
+    fn unparseable_output_reports_nothing_rather_than_a_blob() {
+        assert_eq!(short_version(&None), None);
+        assert_eq!(short_version(&full("")), None);
+        assert_eq!(short_version(&full("no digits here")), None);
+    }
 }
 
 /// Parse the output of `adb devices -l`.

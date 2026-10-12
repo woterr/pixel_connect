@@ -387,8 +387,12 @@ const adb = computed(() => store.adbDevices)
 							>
 								{{ row.primary.label }}
 							</button>
+							<!-- Shown only when the primary action is something else (e.g.
+								Accept/Pair): for unreachable/failed devices the primary
+								button already is Reconnect, and rendering both produced
+								two adjacent Reconnect buttons. -->
 							<button
-								v-if="row.status === 'unreachable' || row.status === 'failed'"
+								v-if="(row.status === 'unreachable' || row.status === 'failed') && row.primary.id !== 'retry'"
 								class="pc-btn pc-btn-secondary pc-btn-md shrink-0"
 								:disabled="isBusy(row.id, 'retry')"
 								@click="act(deviceFor(row.id)!, 'retry')"

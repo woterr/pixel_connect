@@ -215,11 +215,6 @@ const nameSavedTick = ref(false)
 let nameTickTimer: ReturnType<typeof setTimeout> | null = null
 const nameInput = ref<HTMLInputElement | null>(null)
 
-function focusName() {
-	nameInput.value?.focus()
-	nameInput.value?.select()
-}
-
 async function saveName() {
 	if (!settings.value) return
 	const name = settings.value.kdeDeviceName.trim()
@@ -500,13 +495,6 @@ onMounted(async () => {
 									@change="saveName"
 									@keydown.enter="saveName"
 								/>
-								<button
-									type="button"
-									class="pc-btn pc-btn-secondary pc-btn-sm shrink-0"
-									@click="focusName"
-								>
-									Edit
-								</button>
 								<button
 									type="button"
 									class="pc-btn pc-btn-primary pc-btn-sm shrink-0"

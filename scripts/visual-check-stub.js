@@ -59,8 +59,8 @@ globalThis.__TAURI_INTERNALS__ = {
 				return {
 					adbPath: '/usr/bin/adb',
 					scrcpyPath: '/usr/bin/scrcpy',
-					adbVersion: 'Android Debug Bridge version 1.0.41',
-					scrcpyVersion: 'scrcpy 4.1',
+					adbVersion: '1.0.41',
+					scrcpyVersion: '4.1',
 					error: null,
 				}
 			case 'adb_devices':
