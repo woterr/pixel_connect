@@ -209,6 +209,10 @@ impl ReceiverAdvertiser {
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
                             drop(handle);
+                            // One line per re-registration (30 s cadence): if
+                            // the laptop vanishes from the phone's share sheet,
+                            // these lines say whether we were still advertising.
+                            info!("{RX_INNER_NAME}: re-registering the BLE advertisement");
                         }
                     }
                 }

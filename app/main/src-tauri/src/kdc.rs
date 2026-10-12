@@ -380,6 +380,23 @@ pub async fn devices(state: &KdcState) -> Vec<KcDevice> {
     svc.devices().await
 }
 
+/// One honest line per known device, every minute, so "the phone says
+/// connected but the UI does not" can be settled from the log alone: the link
+/// map, the record state, the transport and how stale the last sighting is.
+pub async fn log_device_summary(state: &KdcState) {
+    for d in devices(state).await {
+        log::info!(
+            "device summary: {} ({}) state={:?} transport={:?} trusted={} last_seen={}s ago",
+            d.name,
+            d.id,
+            d.link_state,
+            d.transport,
+            d.trusted,
+            pixel_connect_kdeconnect::config::now_secs().saturating_sub(d.last_seen),
+        );
+    }
+}
+
 pub async fn device_info(state: &KdcState) -> pixel_connect_kdeconnect::DeviceInfo {
     let svc = state.service.lock().await;
     svc.device_info()

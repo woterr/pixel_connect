@@ -771,6 +771,12 @@ impl LinkContext {
     /// from paired state.
     pub(crate) async fn republish_link_state(&self, peer_id: &str) {
         let connected = self.links.lock().await.contains_key(peer_id);
+        // Rare (only on failed handshakes/dials) and load-bearing: without it
+        // there is no way to tell a real disconnect from a refused duplicate.
+        info!(
+            "republishing {peer_id} as {}",
+            if connected { "Connected" } else { "Disconnected" }
+        );
         let mut devices = self.devices.write().await;
         if let Some(d) = devices.get_mut(peer_id) {
             d.link_state = if connected {

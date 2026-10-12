@@ -442,12 +442,19 @@ async fn main() -> Result<(), anyhow::Error> {
                 let handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                    let mut n: u64 = 0;
                     loop {
                         tick.tick().await;
                         let Some(state) = handle.try_state::<Arc<KdcState>>() else {
                             continue;
                         };
                         kdc::refresh(state.inner()).await;
+                        // Once a minute, on the same tick, so a disputed
+                        // connection state leaves a trail without spamming.
+                        n += 1;
+                        if n % 12 == 0 {
+                            kdc::log_device_summary(state.inner()).await;
+                        }
                     }
                 });
             }

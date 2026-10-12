@@ -243,6 +243,15 @@ impl DeviceLink<tokio::net::TcpStream> {
 
         self.publish().await;
 
+        // Link lifecycle is INFO, not debug: these lines are the only record of
+        // when a link actually existed, and diagnosing "the phone says
+        // connected but the UI does not" is impossible without them. Links are
+        // rare (one per peer per session), so this cannot spam.
+        info!(
+            "{}: link established to {} (id {})",
+            self.peer.name, self.peer_addr, self.peer.id
+        );
+
         // A freshly connected trusted peer gets our current clipboard offer.
         if self.trusted && self.ctx.settings.auto_clipboard() {
             self.send_clipboard_connect().await;
@@ -286,7 +295,11 @@ impl DeviceLink<tokio::net::TcpStream> {
                                 );
                                 continue;
                             }
-                            debug!("{}: link read ended: {e}", self.peer.name);
+                            info!(
+                                "{}: link ended after {:?} ({e})",
+                                self.peer.name,
+                                self.started_at.elapsed()
+                            );
                             break;
                         }
                     }
