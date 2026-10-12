@@ -2,20 +2,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mdns_sd::{AddrType, ServiceDaemon, ServiceInfo};
-use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::watch;
-use tokio::time::{interval_at, Instant};
+use tokio::time::{Instant, interval_at};
 use tokio_util::sync::CancellationToken;
-use ts_rs::TS;
 
-use crate::utils::{gen_mdns_endpoint_info, gen_mdns_name, DeviceType};
+use crate::DEVICE_NAME;
+use crate::utils::{DeviceType, gen_mdns_endpoint_info, gen_mdns_name};
 
 const INNER_NAME: &str = "MDnsServer";
 const TICK_INTERVAL: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Visibility {
     Visible = 0,
     Invisible = 1,
@@ -135,16 +133,18 @@ impl MDnsServer {
         service_port: u16,
         device_type: DeviceType,
     ) -> Result<ServiceInfo, anyhow::Error> {
+        // This `name` is going to be random every time RQS service restarts.
+        // If that is not desired, derive host_name, etc. via some other means
         let name = gen_mdns_name(endpoint_id);
-        let hostname = sys_metrics::host::get_hostname()?;
-        info!("Broadcasting with: {hostname}");
-        let endpoint_info = gen_mdns_endpoint_info(device_type as u8, &hostname);
+        let device_name = DEVICE_NAME.read().unwrap().clone();
+        info!("Broadcasting with: device_name={device_name}, host_name={name}");
+        let endpoint_info = gen_mdns_endpoint_info(device_type as u8, &device_name);
 
         let properties = [("n", endpoint_info)];
         let si = ServiceInfo::new(
             "_FC9F5ED42C8A._tcp.local.",
             &name,
-            &hostname,
+            &name, // Needs to be ASCII?
             "",
             service_port,
             &properties[..],

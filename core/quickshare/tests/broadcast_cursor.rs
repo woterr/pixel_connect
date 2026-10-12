@@ -19,14 +19,20 @@
 //! both see every message - then the private channel and the relay are not
 //! needed, and are in fact the cause.
 
-use pixel_connect_quickshare::channel::ChannelMessage;
+use pixel_connect_quickshare::channel::{
+    ChannelMessage, Message, MessageClient, TransferKind,
+};
 use tokio::sync::broadcast;
 use tokio::time::{timeout, Duration};
 
 fn message(id: &str) -> ChannelMessage {
     ChannelMessage {
         id: id.to_string(),
-        ..Default::default()
+        msg: Message::Client(MessageClient {
+            kind: TransferKind::Inbound,
+            state: None,
+            metadata: None,
+        }),
     }
 }
 

@@ -144,7 +144,7 @@ pub async fn quickshare_send_payload(
 #[tauri::command]
 pub fn quickshare_send_to_lib(
     state: Shared<'_>,
-    message: pixel_connect_quickshare::channel::ChannelMessage,
+    message: pixel_connect_quickshare::ui_channel::ChannelMessage,
 ) -> Result<(), String> {
     crate::quickshare::send_to_lib(state.inner(), message)
 }
@@ -168,12 +168,12 @@ pub fn quickshare_set_download_path(app: AppHandle, state: Shared<'_>, path: Opt
 
 #[tauri::command]
 pub fn quickshare_accept_transfer(state: Shared<'_>, id: String) -> Result<(), String> {
-    crate::quickshare::send_to_lib(state.inner(), crate::quickshare::accept_transfer(id))
+    crate::quickshare::send_engine_message(state.inner(), crate::quickshare::accept_transfer(id))
 }
 
 #[tauri::command]
 pub fn quickshare_reject_transfer(state: Shared<'_>, id: String) -> Result<(), String> {
-    crate::quickshare::send_to_lib(state.inner(), crate::quickshare::reject_transfer(id))
+    crate::quickshare::send_engine_message(state.inner(), crate::quickshare::reject_transfer(id))
 }
 
 #[tauri::command]

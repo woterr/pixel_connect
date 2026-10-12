@@ -1,27 +1,43 @@
 use std::collections::HashMap;
 
+use info::{InternalFileInfo, TransferMetadata};
 use p256::{PublicKey, SecretKey};
-use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
-use self::info::{InternalFileInfo, TransferMetadata};
 use crate::securegcm::ukey2_client_init::CipherCommitment;
+use crate::sharing_nearby::wifi_credentials_metadata::SecurityType;
 use crate::utils::RemoteDeviceInfo;
 
 #[cfg(feature = "experimental")]
 mod ble;
 #[cfg(feature = "experimental")]
 pub use ble::*;
-pub use blea::ReceiverAdvertiser;
-pub use gatt::ReceiverGattServer;
 #[cfg(all(feature = "experimental", target_os = "linux"))]
 mod blea;
-mod gatt;
 #[cfg(all(feature = "experimental", target_os = "linux"))]
 pub use blea::*;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+mod gatt;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+pub use gatt::*;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+mod l2cap;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+pub use l2cap::*;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+mod migratable;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+pub use migratable::*;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+mod ble_client;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+pub use ble_client::*;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+mod hotspot;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+pub use hotspot::*;
 mod inbound;
 pub use inbound::*;
-pub(crate) mod info;
+pub mod info;
 mod mdns_discovery;
 pub use mdns_discovery::*;
 mod mdns;
@@ -30,9 +46,8 @@ mod outbound;
 pub use outbound::*;
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, PartialEq)]
-#[ts(export)]
-pub enum State {
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TransferState {
     #[default]
     Initial,
     ReceivedConnectionRequest,
@@ -62,7 +77,7 @@ pub struct InnerState {
     pub encryption_done: bool,
 
     // Subject to be used-facing for progress, ...
-    pub state: State,
+    pub state: TransferState,
     pub remote_device_info: Option<RemoteDeviceInfo>,
     pub pin_code: Option<String>,
     pub transfer_metadata: Option<TransferMetadata>,
@@ -82,6 +97,9 @@ pub struct InnerState {
 
     // Used to handle/track ingress transfer
     pub text_payload: Option<TextPayloadInfo>,
+    /// Data chunks received per payload id — answers the sender's
+    /// AUTO_RESUME (payload resume) question after a mid-transfer channel switch.
+    pub payload_chunk_counts: HashMap<i64, i32>,
     // pub text_payload_id: i64,
     // pub text_is_url: bool,
     // pub wifi_ssid: Option<String>,
@@ -92,10 +110,10 @@ pub struct InnerState {
 pub enum TextPayloadInfo {
     Url(i64),
     Text(i64),
-    Wifi((i64, String)),
+    Wifi((i64, String, SecurityType)), // id, ssid, security type
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum TextPayloadType {
     Url,
     Text,
@@ -107,7 +125,7 @@ impl TextPayloadInfo {
         match self {
             TextPayloadInfo::Url(value)
             | TextPayloadInfo::Text(value)
-            | TextPayloadInfo::Wifi((value, _)) => value.to_owned(),
+            | TextPayloadInfo::Wifi((value, _, _)) => value.to_owned(),
         }
     }
 }

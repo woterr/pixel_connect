@@ -599,7 +599,7 @@ pub fn notify_request(app: &AppHandle, name: &str, detail: &str, id: &str) {
                     // indistinguishable from a broken one.
                     n.wait_for_action(|action| match action {
                         "accept" => {
-                            if let Err(e) = crate::quickshare::send_to_lib(
+                            if let Err(e) = crate::quickshare::send_engine_message(
                                 handle.state::<Arc<AppState>>().inner(),
                                 crate::quickshare::accept_transfer(transfer_id),
                             ) {
@@ -609,7 +609,7 @@ pub fn notify_request(app: &AppHandle, name: &str, detail: &str, id: &str) {
                             }
                         }
                         "reject" => {
-                            if let Err(e) = crate::quickshare::send_to_lib(
+                            if let Err(e) = crate::quickshare::send_engine_message(
                                 handle.state::<Arc<AppState>>().inner(),
                                 crate::quickshare::reject_transfer(transfer_id),
                             ) {

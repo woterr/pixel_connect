@@ -8,7 +8,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use pixel_connect_quickshare::channel::{ChannelAction, ChannelDirection, ChannelMessage};
+use pixel_connect_quickshare::channel::{
+    ChannelMessage as EngineMessage, Message as EngineProtocol, TransferAction,
+};
+use pixel_connect_quickshare::ui_channel::{
+    self, ChannelMessage as UiMessage, State as UiState,
+};
 use pixel_connect_quickshare::{SendInfo, Visibility};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -35,7 +40,15 @@ pub fn spawn_forwarders(app: AppHandle) {
             let mut rx = sender.subscribe();
             loop {
                 match rx.recv().await {
-                    Ok(msg) => {
+                    Ok(engine_msg) => {
+                        // Engine protocol in, UI protocol onward. Everything
+                        // below this point works on the translated message, so
+                        // the frontend contract never sees the engine's shapes.
+                        let Some(msg) =
+                            ui_channel::translate_incoming(engine_msg.id.clone(), &engine_msg.msg)
+                        else {
+                            continue;
+                        };
                         // A text share is only useful once the text itself has
                         // arrived, which happens after consent is given. Put it
                         // on the desktop clipboard at that point: sharing a
@@ -80,7 +93,7 @@ pub fn spawn_forwarders(app: AppHandle) {
                         // happened to finish last, which is arbitrary. Non-image
                         // files are left alone, and a decode failure is not an
                         // error - the file is already saved either way.
-                        if msg.state == Some(pixel_connect_quickshare::State::Finished) {
+                        if msg.state == Some(UiState::Finished) {
                             let images = msg
                                 .meta
                                 .as_ref()
@@ -114,9 +127,7 @@ pub fn spawn_forwarders(app: AppHandle) {
                             }
                         }
 
-                        if msg.state
-                            == Some(pixel_connect_quickshare::State::WaitingForUserConsent)
-                        {
+                        if msg.state == Some(UiState::WaitingForUserConsent) {
                             // Auto-accept when the user asked for it. The KDE
                             // share path already honours auto_accept_shares, but
                             // Quick Share had no equivalent, so the switch did
@@ -244,7 +255,20 @@ pub async fn send_payload(state: &Arc<crate::AppState>, payload: SendInfo) -> Re
         .map_err(|e| format!("could not queue the Quick Share payload: {e}"))
 }
 
-pub fn send_to_lib(state: &Arc<crate::AppState>, message: ChannelMessage) -> Result<(), String> {
+/// Deliver a UI message to the engine, translating the action. The frontend
+/// speaks the UI protocol (this signature is the IPC-visible boundary); the
+/// engine only ever sees its own `Message::Lib`.
+pub fn send_to_lib(state: &Arc<crate::AppState>, message: UiMessage) -> Result<(), String> {
+    let Some(action) = message.action.as_ref() else {
+        return Err("message carries no action".to_string());
+    };
+    send_engine_action(state, message.id, ui_channel::translate_action(action))
+}
+
+pub fn send_engine_message(
+    state: &Arc<crate::AppState>,
+    message: EngineMessage,
+) -> Result<(), String> {
     state
         .message_sender
         .send(message)
@@ -252,55 +276,79 @@ pub fn send_to_lib(state: &Arc<crate::AppState>, message: ChannelMessage) -> Res
         .map_err(|e| format!("could not deliver the message: {e}"))
 }
 
-pub fn accept_transfer(id: String) -> ChannelMessage {
-    ChannelMessage {
+fn send_engine_action(
+    state: &Arc<crate::AppState>,
+    id: String,
+    action: TransferAction,
+) -> Result<(), String> {
+    state
+        .message_sender
+        .send(EngineMessage {
+            id,
+            msg: EngineProtocol::Lib { action },
+        })
+        .map(|_| ())
+        .map_err(|e| format!("could not deliver the message: {e}"))
+}
+
+pub fn accept_transfer(id: String) -> EngineMessage {
+    EngineMessage {
         id,
-        direction: ChannelDirection::FrontToLib,
-        action: Some(ChannelAction::AcceptTransfer),
-        ..Default::default()
+        msg: EngineProtocol::Lib {
+            action: TransferAction::ConsentAccept,
+        },
     }
 }
 
-pub fn reject_transfer(id: String) -> ChannelMessage {
-    ChannelMessage {
+pub fn reject_transfer(id: String) -> EngineMessage {
+    EngineMessage {
         id,
-        direction: ChannelDirection::FrontToLib,
-        action: Some(ChannelAction::RejectTransfer),
-        ..Default::default()
+        msg: EngineProtocol::Lib {
+            action: TransferAction::ConsentDecline,
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixel_connect_quickshare::channel::{
+        MessageClient, TransferKind as EngineKind,
+    };
+    use pixel_connect_quickshare::hdl::TransferState as EngineState;
 
-    /// The bug this pins: the consent notification was gated on
-    /// `direction == FrontToLib`, but the library only ever emits `LibToFront`
-    /// (see `inbound.rs::update_state`). The branch was therefore unreachable
-    /// and an incoming Quick Share offer could only be answered by opening the
-    /// window, which is precisely what the notification exists to avoid.
-    ///
-    /// If the library ever starts tagging its messages differently, this test
-    /// is where it should be noticed.
-    #[test]
-    fn an_offer_is_recognised_without_testing_the_direction() {
-        let offer = ChannelMessage {
+    fn engine_offer() -> EngineMessage {
+        EngineMessage {
             id: "transfer-1".into(),
-            // What the library actually sends.
-            direction: ChannelDirection::LibToFront,
-            state: Some(pixel_connect_quickshare::State::WaitingForUserConsent),
-            ..Default::default()
-        };
+            msg: EngineProtocol::Client(MessageClient {
+                kind: EngineKind::Inbound,
+                state: Some(EngineState::WaitingForUserConsent),
+                metadata: None,
+            }),
+        }
+    }
 
+    /// Engine events must translate into the UI shape the forwarder logic and
+    /// the frontend both rely on — and `Message::Lib` must never leak to the UI.
+    #[test]
+    fn engine_events_translate_to_the_ui_shape() {
+        let open = engine_offer();
+        let ui = ui_channel::translate_incoming(open.id.clone(), &open.msg)
+            .expect("an engine Client event must translate");
+        assert_eq!(ui.id, "transfer-1");
+        assert_eq!(ui.direction, ui_channel::ChannelDirection::LibToFront);
+        assert_eq!(ui.rtype, Some(ui_channel::TransferType::Inbound));
+        assert_eq!(ui.state, Some(UiState::WaitingForUserConsent));
+
+        let libward = EngineMessage {
+            id: "x".into(),
+            msg: EngineProtocol::Lib {
+                action: TransferAction::ConsentAccept,
+            },
+        };
         assert!(
-            offer.state == Some(pixel_connect_quickshare::State::WaitingForUserConsent),
-            "an offer waiting for consent must be recognised"
-        );
-        // The condition the code used, and why it was wrong:
-        assert!(
-            offer.direction != ChannelDirection::FrontToLib,
-            "if the library ever sends FrontToFront for an offer, re-check the \
-             direction gate rather than trusting this test"
+            ui_channel::translate_incoming(libward.id.clone(), &libward.msg).is_none(),
+            "engine-bound messages must never be forwarded to the UI"
         );
     }
 
@@ -308,16 +356,41 @@ mod tests {
     fn accept_and_reject_carry_the_transfer_id() {
         for msg in [accept_transfer("abc".into()), reject_transfer("abc".into())] {
             assert_eq!(msg.id, "abc");
-            assert_eq!(msg.direction, ChannelDirection::FrontToLib);
-            assert!(msg.action.is_some(), "an action must be set");
+            let EngineProtocol::Lib { action } = msg.msg else {
+                panic!("accept/reject must build engine-bound actions");
+            };
+            assert!(
+                matches!(
+                    action,
+                    TransferAction::ConsentAccept | TransferAction::ConsentDecline
+                ),
+                "an action must be set"
+            );
         }
+        let EngineProtocol::Lib { action } = accept_transfer("abc".into()).msg else {
+            panic!("unreachable");
+        };
+        assert_eq!(action, TransferAction::ConsentAccept);
+        let EngineProtocol::Lib { action } = reject_transfer("abc".into()).msg else {
+            panic!("unreachable");
+        };
+        assert_eq!(action, TransferAction::ConsentDecline);
+    }
+
+    /// The UI action still maps onto the engine action after translation.
+    #[test]
+    fn ui_actions_map_onto_engine_actions() {
         assert_eq!(
-            accept_transfer("abc".into()).action,
-            Some(ChannelAction::AcceptTransfer)
+            ui_channel::translate_action(&ui_channel::ChannelAction::AcceptTransfer),
+            TransferAction::ConsentAccept
         );
         assert_eq!(
-            reject_transfer("abc".into()).action,
-            Some(ChannelAction::RejectTransfer)
+            ui_channel::translate_action(&ui_channel::ChannelAction::RejectTransfer),
+            TransferAction::ConsentDecline
+        );
+        assert_eq!(
+            ui_channel::translate_action(&ui_channel::ChannelAction::CancelTransfer),
+            TransferAction::TransferCancel
         );
     }
 
@@ -325,22 +398,21 @@ mod tests {
     /// notification, or the user is asked about transfers already in flight.
     #[test]
     fn only_the_consent_state_raises_an_offer() {
-        let others = [
-            pixel_connect_quickshare::State::Initial,
-            pixel_connect_quickshare::State::ReceivingFiles,
-            pixel_connect_quickshare::State::Finished,
-            pixel_connect_quickshare::State::Rejected,
-            pixel_connect_quickshare::State::Cancelled,
-        ];
-        for s in others {
-            let msg = ChannelMessage {
+        for s in [
+            UiState::Initial,
+            UiState::ReceivingFiles,
+            UiState::Finished,
+            UiState::Rejected,
+            UiState::Cancelled,
+        ] {
+            let ui = UiMessage {
                 id: "x".into(),
-                direction: ChannelDirection::LibToFront,
+                direction: ui_channel::ChannelDirection::LibToFront,
                 state: Some(s.clone()),
                 ..Default::default()
             };
             assert!(
-                msg.state != Some(pixel_connect_quickshare::State::WaitingForUserConsent),
+                ui.state != Some(UiState::WaitingForUserConsent),
                 "{s:?} must not be treated as an offer"
             );
         }

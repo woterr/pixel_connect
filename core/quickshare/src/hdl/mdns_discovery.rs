@@ -1,17 +1,14 @@
 use std::collections::HashMap;
 
 use mdns_sd::{ServiceDaemon, ServiceEvent};
-use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
-use ts_rs::TS;
 
-use crate::utils::{is_not_self_ip, parse_mdns_endpoint_info};
 use crate::DeviceType;
+use crate::utils::{is_not_self_ip, parse_mdns_endpoint_info};
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct EndpointInfo {
     pub fullname: String,
     pub id: String,
@@ -20,6 +17,12 @@ pub struct EndpointInfo {
     pub port: Option<String>,
     pub rtype: Option<DeviceType>,
     pub present: Option<bool>,
+    /// Set for a recipient discovered over BLE (a phone on its receive screen).
+    /// `ble_addr` is the peer's current LE address; `ble_psm` its L2CAP PSM.
+    /// Both rotate, so the send path re-scans by name before dialing — these are
+    /// a hint and the marker that this endpoint is reachable over BLE.
+    pub ble_addr: Option<String>,
+    pub ble_psm: Option<u16>,
 }
 
 pub struct MDnsDiscovery {
@@ -94,6 +97,8 @@ impl MDnsDiscovery {
                                             port: Some(port.to_string()),
                                             rtype: Some(dt),
                                             present: Some(true),
+                                            ble_addr: None,
+                                            ble_psm: None,
                                         };
                                         info!("ServiceResolved: Resolved a new service: {:?}", ei);
                                         cache.insert(fullname.clone(), ei.clone());

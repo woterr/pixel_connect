@@ -2,10 +2,10 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
-use get_if_addrs::get_if_addrs;
+use get_if_addrs::{IfAddr, get_if_addrs};
 use hkdf::Hkdf;
 use num_bigint::{BigUint, ToBigInt};
 use p256::elliptic_curve::rand_core::OsRng;
@@ -14,11 +14,12 @@ use rand::{Rng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tokio::io::AsyncReadExt;
+
 use ts_rs::TS;
 
 use crate::CUSTOM_DOWNLOAD;
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[allow(dead_code)]
 pub enum DeviceType {
@@ -41,7 +42,7 @@ impl DeviceType {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RemoteDeviceInfo {
     pub name: String,
@@ -85,6 +86,13 @@ pub fn gen_mdns_name(endpoint_id: [u8; 4]) -> String {
     URL_SAFE_NO_PAD.encode(&name_b)
 }
 
+/// The 16 identity bytes (2-byte salt + 14-byte metadata-key hash) this run
+/// presents in every advertisement. Random per run, but the *same* over mDNS
+/// and BLE: the phone can't tell that two advertisements with different
+/// identity bytes are the same device, and lists it twice.
+pub static ENDPOINT_IDENTITY: once_cell::sync::Lazy<[u8; 16]> =
+    once_cell::sync::Lazy::new(|| rand::rng().random());
+
 pub fn gen_mdns_endpoint_info(device_type: u8, device_name: &str) -> String {
     let mut record = Vec::new();
 
@@ -92,15 +100,7 @@ pub fn gen_mdns_endpoint_info(device_type: u8, device_name: &str) -> String {
     // Device types: unknown=0, phone=1, tablet=2, laptop=3
     record.push(device_type << 1);
 
-    // Fixed, not random.
-    //
-    // This used to be 16 random bytes generated per call, which meant the same
-    // endpoint advertised a *different* identity on every rebuild - and a
-    // different identity from the one the BLE receiver advertises, which is a
-    // fixed constant (QS_EINFO_IDENTITY). Android reconciles the BLE and mDNS
-    // views of one endpoint by this identity, so a mismatch makes it list the
-    // same computer twice: once as "BLE", once as "network".
-    record.extend_from_slice(&crate::hdl::QS_EINFO_IDENTITY);
+    record.extend_from_slice(ENDPOINT_IDENTITY.as_slice());
 
     let device_name = device_name.as_bytes();
     let length = device_name.len() as u8;
@@ -210,6 +210,48 @@ pub fn get_download_dir() -> PathBuf {
     }
 
     Path::new("/").to_path_buf()
+}
+
+/// First non-loopback IPv4 address of this host (used to advertise our Wi-Fi-LAN
+/// endpoint in a bandwidth-upgrade). Prefers private LAN ranges when several exist.
+pub fn local_ipv4() -> Option<[u8; 4]> {
+    let addrs = get_if_addrs().ok()?;
+    let mut fallback: Option<[u8; 4]> = None;
+    for ia in addrs {
+        if let std::net::IpAddr::V4(v4) = ia.ip() {
+            if v4.is_loopback() || v4.is_link_local() {
+                continue;
+            }
+            if v4.is_private() {
+                return Some(v4.octets());
+            }
+            fallback.get_or_insert(v4.octets());
+        }
+    }
+    fallback
+}
+
+/// Whether `remote` falls inside the subnet of any of our non-loopback IPv4
+/// interfaces — i.e. whether a peer at that address is reachable over the
+/// local network (used to pick the bandwidth-upgrade path).
+pub fn same_subnet(remote: [u8; 4]) -> bool {
+    let Ok(addrs) = get_if_addrs() else {
+        return false;
+    };
+    let r = u32::from(Ipv4Addr::from(remote));
+    for ia in addrs {
+        if let IfAddr::V4(v4) = &ia.addr {
+            if v4.ip.is_loopback() || v4.ip.is_link_local() {
+                continue;
+            }
+            let ip = u32::from(v4.ip);
+            let mask = u32::from(v4.netmask);
+            if mask != 0 && (ip & mask) == (r & mask) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub fn is_not_self_ip(ip_address: &Ipv4Addr) -> bool {

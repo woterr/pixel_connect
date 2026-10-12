@@ -1,3 +1,13 @@
+// Pixel Connect — Google Quick Share protocol core.
+//
+// Engine source: `open-quickshare` core_lib (`rqs_lib`) at commit 5a31145
+// (2026-09-01), which incorporates the `rquickshare-ble` BLE work (fork tip
+// 61b9f66); both Copyright (c) Martin ANDRE and contributors, GPL-3.0-or-later.
+// Adapted minimally: service renamed to QuickShareService, device name comes
+// from the host, and the UI-facing channel protocol lives in `ui_channel`
+// (translated at the Tauri boundary so the frontend contract is unchanged).
+// See ../../NOTICE.md and docs/architecture/quickshare-migration.md.
+
 #[macro_use]
 extern crate log;
 
@@ -8,11 +18,10 @@ use anyhow::anyhow;
 use channel::ChannelMessage;
 #[cfg(all(feature = "experimental", target_os = "linux"))]
 use hdl::BleAdvertiser;
-use hdl::{ReceiverAdvertiser, ReceiverGattServer};
 use hdl::MDnsDiscovery;
 use once_cell::sync::Lazy;
-use rand::distr::Alphanumeric;
 use rand::Rng;
+use rand::distr::Alphanumeric;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -24,12 +33,13 @@ use crate::hdl::MDnsServer;
 use crate::manager::TcpServer;
 
 pub mod channel;
-mod errors;
-mod hdl;
-mod manager;
-mod utils;
+pub mod errors;
+pub mod hdl;
+pub mod manager;
+pub mod ui_channel;
+pub mod utils;
 
-pub use hdl::{EndpointInfo, OutboundPayload, State, Visibility};
+pub use hdl::{EndpointInfo, OutboundPayload, TransferState, Visibility};
 pub use manager::SendInfo;
 pub use utils::DeviceType;
 
@@ -50,6 +60,8 @@ pub mod location_nearby_connections {
 }
 
 static CUSTOM_DOWNLOAD: Lazy<RwLock<Option<PathBuf>>> = Lazy::new(|| RwLock::new(None));
+static DEVICE_NAME: Lazy<RwLock<String>> =
+    Lazy::new(|| RwLock::new(sys_metrics::host::get_hostname().unwrap_or("Unknown device".into())));
 
 #[derive(Debug)]
 pub struct QuickShareService {
@@ -66,12 +78,10 @@ pub struct QuickShareService {
     // Only used to send the info "a nearby device is sharing"
     ble_sender: broadcast::Sender<()>,
 
-    port_number: Option<u32>,
+    pub port_number: Option<u32>,
 
     pub message_sender: broadcast::Sender<ChannelMessage>,
 
-    // Kept so the application layer can request outbound transfers after the
-    // service has been moved into its runtime-independent state.
     send_sender: Option<mpsc::Sender<SendInfo>>,
 }
 
@@ -87,8 +97,10 @@ impl QuickShareService {
         port_number: Option<u32>,
         download_path: Option<PathBuf>,
     ) -> Self {
-        let mut guard = CUSTOM_DOWNLOAD.write().unwrap();
-        *guard = download_path;
+        {
+            let mut guard = CUSTOM_DOWNLOAD.write().unwrap();
+            *guard = download_path;
+        }
 
         let (message_sender, _) = broadcast::channel(50);
         let (ble_sender, _) = broadcast::channel(5);
@@ -110,6 +122,16 @@ impl QuickShareService {
         }
     }
 
+    /// The channel the application uses to queue outgoing payloads. Set by
+    /// `run()`; `None` before the service starts.
+    pub fn send_receiver(&self) -> Option<mpsc::Sender<SendInfo>> {
+        self.send_sender.clone()
+    }
+
+    pub fn subscribe_ble(&self) -> broadcast::Receiver<()> {
+        self.ble_sender.subscribe()
+    }
+
     pub async fn run(
         &mut self,
     ) -> Result<(mpsc::Sender<SendInfo>, broadcast::Receiver<()>), anyhow::Error> {
@@ -128,6 +150,11 @@ impl QuickShareService {
         let binded_addr = tcp_listener.local_addr()?;
         info!("TcpListener on: {}", binded_addr);
 
+        // So the random port can be accessed from the user if needed.
+        // This does have a difference in behaviour however when port_number is Some.
+        // .stop() and .run() will reuse the port number instead of generating a new one.
+        self.port_number = Some(binded_addr.port() as u32);
+
         // MPSC for the TcpServer
         let send_channel = mpsc::channel(10);
         // Start TcpServer in own "task"
@@ -142,112 +169,12 @@ impl QuickShareService {
 
         #[cfg(feature = "experimental")]
         {
-            // Don't threat BleListener error as fatal, it's a nice to have.
-            if let Ok(ble) = BleListener::new(self.ble_sender.clone()).await {
+            if let Ok(ble) = BleListener::new(self.ble_sender.clone())
+                .await
+                .inspect_err(|err| warn!("BleListener: {}", err))
+            {
                 let ctk = ctoken.clone();
                 tracker.spawn(async move { ble.run(ctk).await });
-            }
-        }
-
-        // Quick Share *receiver* discovery over BLE.
-        //
-        // Google Quick Share drops the phone off Wi-Fi while it browses, so an
-        // mDNS-only receiver is invisible during exactly the moment the user is
-        // looking for targets. The phone is then left holding only a BLE
-        // endpoint, which is what these two serve.
-        //
-        // The `endpoint_id` must be the same four bytes mDNS uses, or the two
-        // resolve to two different endpoints and the phone sees a target it
-        // cannot reach.
-        let rx_endpoint_id: [u8; 4] = endpoint_id[..4].try_into()?;
-        {
-            let ctk_ble = ctoken.clone();
-            // The application's own channel, shared with the TCP inbound.
-            //
-            // An earlier version gave this a private channel, on the reasoning
-            // that two sessions sharing one channel consume each other's
-            // traffic. That reasoning is false: every broadcast Receiver keeps
-            // its own cursor, so both sessions see every message and neither
-            // can starve the other. tests/broadcast_cursor.rs pins it.
-            //
-            // The private channel needed a relay to get events out to the
-            // application, and the relay was one-way. Measured on a Pixel 8,
-            // the offer reached the application and the accept never came back
-            // the other way, so the session sat in WaitingForUserConsent for a
-            // minute of keepalives until the phone gave up:
-            //
-            //     quickshare offer: Shreyas's Pixel 8 wants to share 1 file
-            //     Unhandled connection state ... WaitingForUserConsent
-            //     weave: DISCONNECTION
-            //
-            // Sharing the application's channel is what the TCP inbound has
-            // always done, so this is the same wiring, not new machinery.
-            let msg_sender = self.message_sender.clone();
-            let hostname = sys_metrics::host::get_hostname().unwrap_or_else(|_| "Pixel Connect".into());
-            let endpoint_for_ble = rx_endpoint_id;
-            let hostname_gatt = hostname.clone();
-            tracker.spawn(async move {
-                // GATT first: a connectable advertisement is only useful once
-                // something is there to connect to.
-                // slot0 returns exactly the bytes the advertisement carries.
-                let advertisement =
-                    hdl::receiver_service_data(endpoint_for_ble, 3, &hostname_gatt);
-                match ReceiverGattServer::new(
-                    advertisement,
-                    msg_sender.clone(),
-                    0,
-                )
-                .await
-                {
-                    Ok(gatt) => {
-                        if let Err(e) = gatt.run(ctk_ble.clone()).await {
-                            error!("ReceiverGattServer ended: {e}");
-                        }
-                    }
-                    Err(e) => error!(
-                        "could not start the Quick Share BLE GATT service, so the \
-                         phone cannot discover this machine over Bluetooth: {e}"
-                    ),
-                }
-            });
-            // Advertise 0xFEF3 by default.
-            //
-            // This was opt-in because advertising it made the phone prefer BLE
-            // while the payload path was unfinished, and Quick Share then stuck
-            // at "connecting" - which regressed the working mDNS/LAN transfer
-            // for everyone. That regression is fixed: both routes now complete
-            // a transfer end to end, verified on a Pixel 8 with no shared
-            // network. See docs/testing/ble-quick-share-verification.md.
-            //
-            // The two routes are one device to the phone, not two. Both carry
-            // the same endpoint id and the same endpoint_info identity, so the
-            // phone reconciles them into a single target rather than listing
-            // the computer twice.
-            //
-            // PIXEL_CONNECT_BLE_RX=0 switches the advertisement off, which is
-            // useful when diagnosing that the two routes have diverged.
-            let ble_rx = std::env::var("PIXEL_CONNECT_BLE_RX")
-                .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-                .unwrap_or(true);
-            if !ble_rx {
-                info!(
-                    "Quick Share BLE receiver advertisement is off \
-                     (PIXEL_CONNECT_BLE_RX=0); the phone will discover this \
-                     machine over mDNS/LAN only"
-                );
-            } else {
-            let ctk_adv = ctoken.clone();
-            let hostname_for_adv = hostname.clone();
-            tracker.spawn(async move {
-                match ReceiverAdvertiser::new(endpoint_for_ble, 3, &hostname_for_adv).await {
-                    Ok(adv) => {
-                        if let Err(e) = adv.run(ctk_adv).await {
-                            error!("ReceiverAdvertiser ended: {e}");
-                        }
-                    }
-                    Err(e) => error!("could not start the Quick Share BLE advertiser: {e}"),
-                }
-            });
             }
         }
 
@@ -262,21 +189,116 @@ impl QuickShareService {
         let ctk = ctoken.clone();
         tracker.spawn(async move { mdns.run(ctk).await });
 
-        tracker.close();
+        // Advertise as a discoverable QuickShare receiver over BLE (0xFEF3) so a
+        // phone that drops off Wi-Fi during its browse phase (the Pixel "AirDrop
+        // update" behaviour) can still list us as a target. Uses the SAME
+        // endpoint_id as mDNS, so once selected the phone reconnects to Wi-Fi and
+        // completes the transfer over the normal Wi-Fi-LAN (mDNS + TCP) path.
+        #[cfg(all(feature = "experimental", target_os = "linux"))]
+        {
+            // The BLE advertiser is always spawned; it self-gates on the live
+            // visibility watch (off while Invisible, on otherwise) so the
+            // "Hidden from everyone" toggle takes effect immediately and a
+            // start-Invisible session can still become visible without a restart.
+            {
+                let rx_endpoint_id: [u8; 4] = endpoint_id[..4].try_into()?;
+                let rx_device_name = DEVICE_NAME.read().unwrap().clone();
+
+                // L2CAP CoC listener: phones that support it connect straight
+                // to this PSM and skip GATT service discovery -- the slow part
+                // of every BLE connect. `PACKET_BLE_L2CAP=off` disables it.
+                let l2cap = if std::env::var("PACKET_BLE_L2CAP")
+                    .map(|v| v.eq_ignore_ascii_case("off"))
+                    .unwrap_or(false)
+                {
+                    info!("L2capServer: disabled by PACKET_BLE_L2CAP=off");
+                    None
+                } else {
+                    match crate::hdl::L2capServer::bind().await {
+                        Ok((server, psm)) => {
+                            info!("L2capServer: listening on PSM {psm}");
+                            Some((server, psm))
+                        }
+                        Err(e) => {
+                            warn!("Couldn't start the L2CAP server ({e}); phones will use GATT");
+                            None
+                        }
+                    }
+                };
+                let l2cap_psm = l2cap.as_ref().map(|(_, psm)| *psm);
+
+                // Same advertisement bytes are used for the BLE advert and served
+                // over GATT slot 0, so the phone reads a consistent endpoint.
+                let advert = crate::hdl::receiver_service_data(
+                    rx_endpoint_id,
+                    crate::utils::DeviceType::Laptop as u8,
+                    &rx_device_name,
+                    l2cap_psm,
+                );
+
+                if let Some((server, _)) = l2cap {
+                    let l2cap_advert = advert.clone();
+                    let l2cap_sender = self.message_sender.clone();
+                    let l2cap_tcp_port = binded_addr.port();
+                    let lctk = ctoken.clone();
+                    tracker.spawn(async move {
+                        server
+                            .run(l2cap_advert, l2cap_sender, l2cap_tcp_port, lctk)
+                            .await;
+                    });
+                }
+
+                // GATT server: when the phone selects us it opens a GATT connection,
+                // reads slot 0 for our advertisement, then drives the weave data
+                // socket which we bridge to the inbound handshake.
+                let gatt_advert = advert.clone();
+                let gatt_sender = self.message_sender.clone();
+                let gatt_tcp_port = binded_addr.port();
+                let gctk = ctoken.clone();
+                tracker.spawn(async move {
+                    match crate::hdl::ReceiverGattServer::new(
+                        gatt_advert,
+                        gatt_sender,
+                        gatt_tcp_port,
+                    )
+                    .await
+                    {
+                        Ok(srv) => {
+                            if let Err(e) = srv.run(gctk).await {
+                                error!("ReceiverGattServer: {}", e);
+                            }
+                        }
+                        Err(e) => error!("Couldn't init ReceiverGattServer: {}", e),
+                    }
+                });
+
+                // BLE receiver advertisement (0xFEF3).
+                let ctk = ctoken.clone();
+                let adv_vis = self.visibility_receiver.clone();
+                tracker.spawn(async move {
+                    match crate::hdl::ReceiverAdvertiser::new(
+                        rx_endpoint_id,
+                        crate::utils::DeviceType::Laptop as u8,
+                        &rx_device_name,
+                        l2cap_psm,
+                    )
+                    .await
+                    {
+                        Ok(adv) => {
+                            if let Err(e) = adv.run(adv_vis, ctk).await {
+                                error!("ReceiverAdvertiser: {}", e);
+                            }
+                        }
+                        Err(e) => error!("Couldn't init ReceiverAdvertiser: {}", e),
+                    }
+                });
+            }
+        }
 
         self.send_sender = Some(send_channel.0.clone());
+        tracker.close();
+
         Ok((send_channel.0, self.ble_sender.subscribe()))
-    }
-
-    /// The channel used to request an outbound transfer, once `run()` has
-    /// completed.
-    pub fn send_receiver(&self) -> Option<mpsc::Sender<SendInfo>> {
-        self.send_sender.clone()
-    }
-
-    /// A fresh receiver for BLE "a device is sharing nearby" hints.
-    pub fn subscribe_ble(&self) -> broadcast::Receiver<()> {
-        self.ble_sender.subscribe()
     }
 
     pub fn discovery(
@@ -307,10 +329,36 @@ impl QuickShareService {
                     error!("Couldn't start BleAdvertiser: {}", e);
                 }
             });
+
+            // Discover phones on their Quick Share receive screen over BLE, so
+            // they can be sent to without both devices being on the same Wi-Fi.
+            // `PACKET_BLE_SEND=off` disables it.
+            if std::env::var("PACKET_BLE_SEND")
+                .map(|v| v.eq_ignore_ascii_case("off"))
+                .unwrap_or(false)
+            {
+                info!("BLE recipient discovery: disabled by PACKET_BLE_SEND=off");
+            } else {
+                let ble_sender = sender.clone();
+                let ctk_bled = ctk.clone();
+                tracker.spawn(async move {
+                    crate::hdl::ble_discovery(ble_sender, ctk_bled).await;
+                });
+            }
         }
 
-        let discovery = MDnsDiscovery::new(sender)?;
-        tracker.spawn(async move { discovery.run(ctk.clone()).await });
+        // `PACKET_PREFER_BLE=on` disables mDNS discovery so recipients are found
+        // over BLE only — the send then starts on L2CAP and (with the phone on
+        // Wi-Fi) exercises the BLE→Wi-Fi bandwidth upgrade. Test/demo toggle.
+        if std::env::var("PACKET_PREFER_BLE")
+            .map(|v| v.eq_ignore_ascii_case("on") || v == "1")
+            .unwrap_or(false)
+        {
+            info!("MDnsDiscovery: disabled by PACKET_PREFER_BLE=on (BLE-only recipient discovery)");
+        } else {
+            let discovery = MDnsDiscovery::new(sender)?;
+            tracker.spawn(async move { discovery.run(ctk.clone()).await });
+        }
 
         Ok(())
     }
@@ -337,6 +385,11 @@ impl QuickShareService {
         }
 
         if let Some(tracker) = &self.tracker {
+            // Inorder for TaskTracker::wait to return, close() must be called
+            // and the count of tasks being watched should be 0 (i.e. they've all closed).
+            //
+            // If not, the TaskTracker may forever wait if task count is 0 when wait() was called
+            tracker.close();
             tracker.wait().await;
         }
 
@@ -349,5 +402,19 @@ impl QuickShareService {
         debug!("Setting the download path to {:?}", p);
         let mut guard = CUSTOM_DOWNLOAD.write().unwrap();
         *guard = p;
+    }
+
+    /// For this to properly take effect,
+    /// `MdnsServer` would need to be reset which is done by `QuickShareService::stop` followed by `QuickShareService::run`.
+    ///
+    /// So only do this when no data transfer is going on.
+    pub fn set_device_name(&self, name: String) {
+        debug!("Setting the device name {:?}", name);
+        let mut guard = DEVICE_NAME.write().unwrap();
+        *guard = name;
+    }
+
+    pub fn get_device_name(&self) -> String {
+        DEVICE_NAME.read().unwrap().clone()
     }
 }
